@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PC MQTT 直式水平儀 Subscriber</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; padding: 24px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #101827; color: #f8fafc; font-family: system-ui, sans-serif;
+    }
+    h1 { text-align: center; }
+    .panel {
+      width: min(100%, 560px); text-align: center;
+      background: #1e293b; padding: 20px; border-radius: 16px; margin-top: 16px;
+    }
+    .level-wrap { display: flex; justify-content: center; align-items: center; gap: 14px; margin: 20px auto; }
+    .scale { height: 300px; display: flex; flex-direction: column; justify-content: space-between; color: #b8c6d9; font-size: 13px; }
+    #level {
+      width: 90px; height: 300px; border: 3px solid #718096; border-radius: 46px;
+      position: relative; overflow: hidden; background: radial-gradient(#26374d, #111827);
+    }
+    #level::before {
+      content: ""; position: absolute; top: 50%; left: 0; right: 0;
+      border-top: 2px dashed #b8c6d9;
+    }
+    #bubble {
+      position: absolute; width: 27px; height: 27px; left: 50%; top: 50%;
+      transform: translate(-50%, -50%); border-radius: 50%; background: #34d399;
+      box-shadow: 0 0 12px #34d39999; transition: top 100ms linear;
+    }
+    .value { font-size: clamp(24px, 4vw, 34px); font-weight: bold; margin: 12px; font-variant-numeric: tabular-nums; }
+    #status, #updated, #source { color: #b8c6d9; text-align: center; margin: 8px; overflow-wrap: anywhere; }
+    button {
+      border: 0; border-radius: 10px; padding: 12px 22px; margin: 8px;
+      background: #3b82f6; color: white; font-size: 16px;
+    }
+    #disconnect { background: #475569; }
+    pre { text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; color: #dbeafe; }
+    @media (max-width: 480px) {
+      body { padding: 12px; }
+      #level, .scale { height: 250px; }
+    }
+  </style>
+</head>
+<body>
+  <h1>PC 遠端 MQTT 直式水平儀</h1>
+  <div class="level-wrap">
+    <div class="scale"><span>+90°</span><span>+45°</span><span>0°</span><span>-45°</span><span>-90°</span></div>
+    <div id="level"><div id="bubble"></div></div>
+  </div>
+  <div class="value">Pitch：<span id="pitch">--</span>°</div>
+  <div class="value">Roll：<span id="roll">--</span>°</div>
+  <div class="value">Yaw：<span id="yaw">--</span>°</div>
+  <div class="value" id="direction">等待手機資料</div>
+
+  <div class="panel">
+    <div id="status">尚未連線 MQTT</div>
+    <div id="updated">尚未收到訊息</div>
+    <div id="source">資料來源：手機</div>
+    <div id="levelStatus">等待水平儀資料</div>
+    <p>Broker：<code>wss://broker.hivemq.com:8884/mqtt</code></p>
+    <p>Topic：<code>nutc/im/s1411331044/compass/yaw</code></p>
+    <button id="connect">連線並訂閱</button>
+    <button id="disconnect">中斷連線</button>
+    <pre id="raw">尚無資料</pre>
+  </div>
+
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script>
+    const BROKER = "wss://broker.hivemq.com:8884/mqtt";
+    const TOPIC = "nutc/im/s1411331044/compass/yaw";
+    const dirs = ["北", "東北", "東", "東南", "南", "西南", "西", "西北"];
+
+    const pitchEl = document.getElementById("pitch");
+    const rollEl = document.getElementById("roll");
+    const yawEl = document.getElementById("yaw");
+    const directionEl = document.getElementById("direction");
+    const bubble = document.getElementById("bubble");
+    const statusEl = document.getElementById("status");
+    const updatedEl = document.getElementById("updated");
+    const sourceEl = document.getElementById("source");
+    const levelStatusEl = document.getElementById("levelStatus");
+    const rawEl = document.getElementById("raw");
+    const connectButton = document.getElementById("connect");
+    const disconnectButton = document.getElementById("disconnect");
+
+    let client = null;
+    let watchdog = null;
+    let lastReceivedAt = 0;
+
+    function directionFromYaw(yaw) {
+      return dirs[Math.round((((yaw % 360) + 360) % 360) / 45) % 8];
+    }
+
+    function onMessage(topic, message) {
+      if (topic !== TOPIC) return;
+
+      try {
+        const data = JSON.parse(message.toString());
+        const pitch = Number(data.pitch);
+        const roll = Number(data.roll);
+        const yaw = data.yaw == null ? null : Number(data.yaw);
+
+        if (!Number.isFinite(pitch) || !Number.isFinite(roll)) {
+          throw new Error("訊息必須包含有效的 pitch 和 roll");
+        }
+
+        pitchEl.textContent = pitch.toFixed(2);
+        rollEl.textContent = roll.toFixed(2);
+        yawEl.textContent = yaw != null && Number.isFinite(yaw) ? yaw.toFixed(2) : "--";
+        directionEl.textContent = yaw != null && Number.isFinite(yaw)
+          ? (data.direction || directionFromYaw(yaw)) : "方向未知";
+
+        // 直式氣泡依 Pitch 上下移動；±90° 映射到約 ±115 px。
+        const clampedPitch = Math.max(-90, Math.min(90, pitch));
+        bubble.style.top = `calc(50% + ${clampedPitch * 1.15}px)`;
+
+        const isLevel = Math.abs(pitch) < 2 && Math.abs(roll) < 2;
+        levelStatusEl.textContent = isLevel
+          ? "目前接近水平（Pitch、Roll 均在 ±2° 內）"
+          : "目前不水平";
+        levelStatusEl.style.color = isLevel ? "#34d399" : "#fbbf24";
+
+        lastReceivedAt = Date.now();
+        updatedEl.textContent = "最後接收：" + new Date().toLocaleTimeString();
+        sourceEl.textContent = "來源：" + (data.source || "手機") + "｜Topic：" + topic;
+        statusEl.textContent = "已連線｜資料同步中";
+        rawEl.textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        statusEl.textContent = "收到無效訊息：" + err.message;
+        rawEl.textContent = message.toString();
+      }
+    }
+
+    function connectMQTT() {
+      if (client) return;
+      if (!window.mqtt) {
+        statusEl.textContent = "MQTT.js 載入失敗，請檢查網路";
+        return;
+      }
+
+      statusEl.textContent = "正在連線…";
+      connectButton.disabled = true;
+      client = mqtt.connect(BROKER, {
+        clientId: "level_sub_" + Math.random().toString(16).slice(2, 12),
+        clean: true, connectTimeout: 10000, reconnectPeriod: 3000
+      });
+
+      client.on("connect", () => {
+        statusEl.textContent = "MQTT 已連線，正在訂閱…";
+        client.subscribe(TOPIC, { qos: 0 }, err => {
+          if (err) statusEl.textContent = "訂閱失敗：" + err.message;
+          else statusEl.textContent = "已訂閱 Topic，等待手機資料";
+        });
+      });
+      client.on("message", onMessage);
+      client.on("reconnect", () => statusEl.textContent = "重新連線中…");
+      client.on("offline", () => statusEl.textContent = "連線中斷，嘗試重連…");
+      client.on("error", err => statusEl.textContent = "MQTT 錯誤：" + err.message);
+      client.on("close", () => {
+        if (client) statusEl.textContent = "MQTT 連線已關閉";
+      });
+
+      watchdog = setInterval(() => {
+        if (!client?.connected) return;
+        if (lastReceivedAt && Date.now() - lastReceivedAt > 5000) {
+          statusEl.textContent = "已連線，但超過 5 秒未收到新資料";
+        }
+      }, 1000);
+      disconnectButton.disabled = false;
+    }
+
+    function disconnectMQTT() {
+      if (watchdog) {
+        clearInterval(watchdog);
+        watchdog = null;
+      }
+      if (client) {
+        const oldClient = client;
+        client = null;
+        oldClient.end(true);
+      }
+      connectButton.disabled = false;
+      disconnectButton.disabled = true;
+      statusEl.textContent = "已中斷連線";
+    }
+
+    connectButton.addEventListener("click", connectMQTT);
+    disconnectButton.addEventListener("click", disconnectMQTT);
+    disconnectButton.disabled = true;
+  </script>
+</body>
+</html>
