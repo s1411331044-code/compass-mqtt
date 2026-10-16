@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>手機 MQTT 直式水平儀 Publisher</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; padding: 20px 14px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #101827; color: #f8fafc; font-family: system-ui, sans-serif;
+    }
+    h1 { text-align: center; font-size: 25px; }
+    .panel {
+      width: min(100%, 460px); text-align: center;
+      background: #1e293b; padding: 18px; border-radius: 16px; margin-top: 12px;
+    }
+    .level-wrap { display: flex; justify-content: center; align-items: center; gap: 12px; margin: 20px auto; }
+    .scale { height: 250px; display: flex; flex-direction: column; justify-content: space-between; color: #b8c6d9; font-size: 12px; }
+    #level {
+      width: 82px; height: 250px; border: 3px solid #718096; border-radius: 42px;
+      position: relative; overflow: hidden; background: radial-gradient(#26374d, #111827);
+    }
+    #level::before {
+      content: ""; position: absolute; top: 50%; left: 0; right: 0;
+      border-top: 2px dashed #b8c6d9;
+    }
+    #bubble {
+      position: absolute; width: 25px; height: 25px; left: 50%; top: 50%;
+      transform: translate(-50%, -50%); border-radius: 50%; background: #34d399;
+      box-shadow: 0 0 12px #34d39999; transition: top 100ms linear;
+    }
+    .value { font-size: 25px; font-weight: bold; margin: 12px; font-variant-numeric: tabular-nums; }
+    #status { color: #b8c6d9; font-size: 14px; overflow-wrap: anywhere; }
+    button {
+      border: 0; border-radius: 10px; padding: 12px 18px; margin: 7px;
+      background: #3b82f6; color: white; font-size: 16px;
+    }
+    button:disabled { opacity: .5; }
+    #stop { background: #475569; }
+    pre { text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; color: #dbeafe; }
+  </style>
+</head>
+<body>
+  <h1>手機 MQTT 直式水平儀</h1>
+  <div id="level">
+    <div id="bubble"></div>
+  </div>
+  <div class="panel">
+    <div class="value">Pitch：<span id="pitch">--</span>°</div>
+    <div class="value">Roll：<span id="roll">--</span>°</div>
+    <div class="value">Yaw：<span id="yaw">--</span>°</div>
+    <div id="direction">等待感測器</div>
+    <p id="status">尚未連線</p>
+    <button id="start">啟動感測器與 MQTT</button>
+    <button id="stop" disabled>停止發布</button>
+    <p>Topic：<code>nutc/im/s1411331044/compass/yaw</code></p>
+    <pre id="raw">尚無資料</pre>
+  </div>
+
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script>
+    const BROKER = "wss://broker.hivemq.com:8884/mqtt";
+    const TOPIC = "nutc/im/s1411331044/compass/yaw";
+
+    const pitchEl = document.getElementById("pitch");
+    const rollEl = document.getElementById("roll");
+    const yawEl = document.getElementById("yaw");
+    const directionEl = document.getElementById("direction");
+    const statusEl = document.getElementById("status");
+    const bubble = document.getElementById("bubble");
+    const startButton = document.getElementById("start");
+    const stopButton = document.getElementById("stop");
+    const rawEl = document.getElementById("raw");
+    const dirs = ["北", "東北", "東", "東南", "南", "西南", "西", "西北"];
+
+    let client = null;
+    let sensorStarted = false;
+    let latestData = null;
+    let lastPublish = 0;
+
+    function directionFromYaw(yaw) {
+      return dirs[Math.round(yaw / 45) % 8];
+    }
+
+    function updateDisplay(data) {
+      pitchEl.textContent = Number(data.pitch).toFixed(2);
+      rollEl.textContent = Number(data.roll).toFixed(2);
+      yawEl.textContent = data.yaw == null ? "--" : Number(data.yaw).toFixed(2);
+      directionEl.textContent = data.yaw == null ? "方向未知" : directionFromYaw(data.yaw);
+
+      // 直式氣泡依 Pitch 上下移動，角度限制在 ±90 度的顯示範圍。
+      const pitch = Math.max(-90, Math.min(90, Number(data.pitch)));
+      bubble.style.top = `calc(50% + ${pitch * 1.05}px)`;
+      rawEl.textContent = JSON.stringify(data, null, 2);
+    }
+
+    function publishLatest() {
+      if (!client?.connected || !latestData) return;
+      client.publish(TOPIC, JSON.stringify(latestData), { qos: 0, retain: true }, err => {
+        if (err) statusEl.textContent = "發布失敗：" + err.message;
+      });
+      lastPublish = Date.now();
+    }
+
+    function onOrientation(event) {
+      if (event.beta == null || event.gamma == null) {
+        statusEl.textContent = "沒有收到 beta/gamma 感測資料";
+        return;
+      }
+
+      const yaw = event.alpha == null ? null : (360 - event.alpha + 360) % 360;
+      latestData = {
+        pitch: Number(event.beta.toFixed(2)),
+        roll: Number(event.gamma.toFixed(2)),
+        yaw: yaw == null ? null : Number(yaw.toFixed(2)),
+        direction: yaw == null ? null : directionFromYaw(yaw),
+        timestamp: Date.now(),
+        source: "mobile-level"
+      };
+
+      updateDisplay(latestData);
+
+      // 每 100 ms 最多發布一次。
+      if (Date.now() - lastPublish >= 100) publishLatest();
+      statusEl.textContent = client?.connected
+        ? "MQTT 已連線｜發布中"
+        : "感測器運作中，等待 MQTT 連線";
+    }
+
+    async function startPublisher() {
+      startButton.disabled = true;
+      statusEl.textContent = "正在啟動感測器與連線 MQTT…";
+
+      try {
+        if (!window.mqtt) throw new Error("MQTT.js 載入失敗，請檢查網路");
+        if (!("DeviceOrientationEvent" in window)) {
+          throw new Error("瀏覽器不支援裝置方向感測");
+        }
+
+        if (typeof DeviceOrientationEvent.requestPermission === "function") {
+          const permission = await DeviceOrientationEvent.requestPermission();
+          if (permission !== "granted") throw new Error("使用者未允許感測器權限");
+        }
+
+        if (!sensorStarted) {
+          window.addEventListener("deviceorientation", onOrientation, true);
+          sensorStarted = true;
+        }
+
+        client = mqtt.connect(BROKER, {
+          clientId: "level_pub_" + Math.random().toString(16).slice(2, 12),
+          clean: true, connectTimeout: 10000, reconnectPeriod: 3000
+        });
+
+        client.on("connect", () => {
+          statusEl.textContent = "MQTT 已連線，正在發布資料";
+          stopButton.disabled = false;
+          publishLatest();
+        });
+        client.on("reconnect", () => statusEl.textContent = "MQTT 重新連線中…");
+        client.on("offline", () => statusEl.textContent = "MQTT 離線，嘗試重新連線…");
+        client.on("error", err => statusEl.textContent = "MQTT 錯誤：" + err.message);
+        client.on("close", () => {
+          if (client) statusEl.textContent = "MQTT 連線已關閉";
+        });
+        stopButton.disabled = false;
+      } catch (err) {
+        statusEl.textContent = "啟動失敗：" + err.message;
+        startButton.disabled = false;
+      }
+    }
+
+    function stopPublisher() {
+      if (client) {
+        client.end(true);
+        client = null;
+      }
+      if (sensorStarted) {
+        window.removeEventListener("deviceorientation", onOrientation, true);
+        sensorStarted = false;
+      }
+      startButton.disabled = false;
+      stopButton.disabled = true;
+      statusEl.textContent = "已停止感測與 MQTT 發布";
+    }
+
+    startButton.addEventListener("click", startPublisher);
+    stopButton.addEventListener("click", stopPublisher);
+  </script>
+</body>
+</html>
