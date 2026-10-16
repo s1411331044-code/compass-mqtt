@@ -95,7 +95,7 @@
         return;
       }
 
-      latestYaw = (360 - event.alpha + 90 + 360) % 360;
+      latestYaw = (360 - event.alpha + 360) % 360;
       showYaw(latestYaw);
 
       // 每 100 ms 最多發布一次，且 MQTT 已連線才發布
