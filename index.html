@@ -1,0 +1,212 @@
+
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>手機 MQTT 指南針 Publisher</title>
+  <style>
+    body {
+      margin: 0; min-height: 100vh;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: #101827; color: #f8fafc;
+      font-family: system-ui, sans-serif;
+    }
+    #compass {
+      width: min(72vw, 280px); aspect-ratio: 1;
+      border: 3px solid #64748b; border-radius: 50%;
+      position: relative;
+      background: radial-gradient(#26374d, #111827);
+    }
+    .mark { position:absolute; transform:translate(-50%,-50%);font-size:20px;font-weight:bold }
+    .n { top:9%;left:50%;color:#fb5757 }
+    .e { top:50%;right:4%;transform:translate(0,-50%) }
+    .s { bottom:1%;left:50%;transform:translate(-50%,0) }
+    .w { top:50%;left:4% }
+    #needle { position:absolute;inset:12%;transition:transform 100ms linear }
+    #needle:before {
+      content:"";position:absolute;top:5%;left:50%;
+      transform:translateX(-50%);
+      border-left:13px solid transparent;
+      border-right:13px solid transparent;
+      border-bottom:105px solid #fb5757;
+    }
+    #needle:after {
+      content:"";position:absolute;top:50%;left:50%;
+      transform:translate(-50%,-50%);
+      width:18px;height:18px;border-radius:50%;background:white;
+    }
+    #degree { font-size:48px;font-weight:bold;margin-top:20px }
+    #direction { font-size:22px;margin:8px }
+    #status { font-size:14px;color:#b8c6d9;text-align:center;padding:12px }
+    button {
+      border:0;border-radius:10px;padding:13px 22px;
+      margin:8px;background:#3b82f6;color:white;font-size:16px;
+    }
+    button:disabled { opacity:.5 }
+  </style>
+</head>
+<body>
+  <h2>手機 MQTT 指南針</h2>
+  <div id="compass">
+    <span class="mark n">N</span>
+    <span class="mark e">E</span>
+    <span class="mark s">S</span>
+    <span class="mark w">W</span>
+    <div id="needle"></div>
+  </div>
+  <div id="degree">---°</div>
+  <div id="direction">等待感測器</div>
+  <div id="status">尚未連線</div>
+  <button id="start">啟動感測器與 MQTT</button>
+  <button id="stop" disabled>停止發布</button>
+
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script>
+    const BROKER = "wss://broker.hivemq.com:8880/mqtt";
+    const TOPIC = "nutc/im/s1411331044/compass/yaw";
+
+    const needle = document.getElementById("needle");
+    const degree = document.getElementById("degree");
+    const direction = document.getElementById("direction");
+    const status = document.getElementById("status");
+    const start = document.getElementById("start");
+    const stop = document.getElementById("stop");
+
+    const dirs = ["北","東北","東","東南","南","西南","西","西北"];
+
+    let client = null;
+    let sensorStarted = false;
+    let lastPublish = 0;
+    let latestYaw = null;
+    let publishTimer = null;
+
+    function showYaw(yaw) {
+      const d = Math.round(yaw) % 360;
+      degree.textContent = String(d).padStart(3, "0") + "°";
+      direction.textContent = dirs[Math.round(d / 45) % 8];
+      needle.style.transform = `rotate(${-yaw}deg)`;
+    }
+
+    function onOrientation(event) {
+      if (event.alpha == null) {
+        status.textContent = "沒有收到 alpha 感測資料";
+        return;
+      }
+
+      latestYaw = (360 - event.alpha + 360) % 360;
+      showYaw(latestYaw);
+
+      // 每 100 ms 最多發布一次，且 MQTT 已連線才發布
+      const now = Date.now();
+      if (client?.connected && now - lastPublish >= 100) {
+        publishYaw();
+      }
+    }
+
+    function publishYaw() {
+      if (!client?.connected || latestYaw == null) return;
+
+      const payload = JSON.stringify({
+        yaw: Number(latestYaw.toFixed(2)),
+        direction: dirs[Math.round(latestYaw / 45) % 8],
+        timestamp: Date.now(),
+        source: "mobile-compass"
+      });
+
+      client.publish(TOPIC, payload, { qos: 0, retain: true }, err => {
+        if (err) {
+          status.textContent = "發布失敗：" + err.message;
+        } else if (client?.connected) {
+          status.textContent = "MQTT 已連線｜發布中｜" +
+            new Date().toLocaleTimeString();
+        }
+      });
+      lastPublish = nowSafe();
+    }
+
+    function nowSafe() {
+      return Date.now();
+    }
+
+    async function startCompass() {
+      start.disabled = true;
+      status.textContent = "正在連線 MQTT…";
+
+      try {
+        if (!window.mqtt) throw new Error("MQTT.js 載入失敗，請檢查網路");
+
+        if (!("DeviceOrientationEvent" in window)) {
+          throw new Error("瀏覽器不支援裝置方向感測");
+        }
+
+        if (typeof DeviceOrientationEvent.requestPermission === "function") {
+          const permission =
+            await DeviceOrientationEvent.requestPermission();
+          if (permission !== "granted") {
+            throw new Error("使用者未允許感測器權限");
+          }
+        }
+
+        if (!sensorStarted) {
+          window.addEventListener("deviceorientation", onOrientation, true);
+          sensorStarted = true;
+        }
+
+        client = mqtt.connect(BROKER, {
+          clientId: "compass_pub_" +
+            Math.random().toString(16).slice(2, 12),
+          clean: true,
+          connectTimeout: 10000,
+          reconnectPeriod: 3000
+        });
+
+        client.on("connect", () => {
+          status.textContent = "MQTT 已連線，等待／發布方向資料";
+          start.disabled = true;
+          stop.disabled = false;
+
+          // 連線後立即發布最新資料
+          publishYaw();
+        });
+
+        client.on("reconnect", () => {
+          status.textContent = "MQTT 重新連線中…";
+        });
+
+        client.on("error", err => {
+          status.textContent = "MQTT 錯誤：" + err.message;
+        });
+
+        client.on("offline", () => {
+          status.textContent = "MQTT 離線，嘗試重新連線…";
+        });
+
+      } catch (err) {
+        status.textContent = "啟動失敗：" + err.message;
+        start.disabled = false;
+      }
+    }
+
+    function stopCompass() {
+      if (client) {
+        client.end(true);
+        client = null;
+      }
+
+      if (sensorStarted) {
+        window.removeEventListener("deviceorientation", onOrientation, true);
+        sensorStarted = false;
+      }
+
+      start.disabled = false;
+      stop.disabled = true;
+      status.textContent = "已停止感測與 MQTT 發布";
+    }
+
+    start.addEventListener("click", startCompass);
+    stop.addEventListener("click", stopCompass);
+  </script>
+</body>
+</html>
