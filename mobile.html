@@ -3,121 +3,309 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>手機三軸加速度監測</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手機三軸加速度監測系統</title>
 
 <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <style>
 body {
     font-family: Arial, sans-serif;
     background: #eef2f7;
     text-align: center;
-    padding: 20px;
+    padding: 15px;
 }
 .container {
-    max-width: 450px;
+    max-width: 850px;
     margin: auto;
     background: white;
-    padding: 25px;
-    border-radius: 18px;
+    padding: 20px;
+    border-radius: 16px;
     box-shadow: 0 3px 12px #ccc;
 }
 h2 { color: #2563eb; }
+
+.status {
+    color: #d97706;
+    font-weight: bold;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+}
+
 .data {
     background: #eaf2ff;
     padding: 15px;
-    margin: 12px 0;
     border-radius: 12px;
-    font-size: 22px;
 }
+
+.value {
+    font-size: 26px;
+    font-weight: bold;
+}
+
+.chartBox {
+    margin-top: 20px;
+    padding: 12px;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 12px;
+}
+
 button {
-    padding: 14px 25px;
-    font-size: 18px;
+    padding: 13px 22px;
+    margin: 8px;
     border: none;
-    border-radius: 10px;
+    border-radius: 9px;
     background: #2563eb;
     color: white;
-    margin: 8px;
+    font-size: 16px;
 }
-#status { color: #d97706; }
+
+.stop {
+    background: #dc2626;
+}
+
+@media(max-width:500px) {
+    .grid {
+        grid-template-columns: 1fr 1fr;
+    }
+}
 </style>
 </head>
 
 <body>
 
 <div class="container">
+
 <h2>手機三軸加速度監測</h2>
 
-<p id="status">MQTT 尚未連線</p>
+<p class="status" id="mqttStatus">MQTT 連線中...</p>
+<p id="sensorStatus">感測器尚未啟動</p>
 
-<div class="data">X 軸：<span id="x">0.00</span> m/s²</div>
-<div class="data">Y 軸：<span id="y">0.00</span> m/s²</div>
-<div class="data">Z 軸：<span id="z">0.00</span> m/s²</div>
+<div class="grid">
 
-<div class="data">
-合成加速度：<br>
-<strong id="total">0.00</strong> m/s²
+    <div class="data">
+        X 軸加速度
+        <div class="value" id="x">0.00</div>
+        m/s²
+    </div>
+
+    <div class="data">
+        Y 軸加速度
+        <div class="value" id="y">0.00</div>
+        m/s²
+    </div>
+
+    <div class="data">
+        Z 軸加速度
+        <div class="value" id="z">0.00</div>
+        m/s²
+    </div>
+
+    <div class="data">
+        合成加速度
+        <div class="value" id="total">0.00</div>
+        m/s²
+    </div>
+
 </div>
 
-<button onclick="startSensor()">啟動感測器</button>
-<button onclick="stopSensor()">停止感測器</button>
+<div class="chartBox">
+    <h3>即時四軸加速度折線圖</h3>
+    <canvas id="accelChart"></canvas>
+</div>
 
-<p id="sensorStatus">感測器尚未啟動</p>
+<button onclick="startSensor()">開始感測</button>
+<button class="stop" onclick="stopSensor()">停止感測</button>
+
+<p>MQTT Topic</p>
+<p>nutc/im/s1411331044/accelerometer/data</p>
+
+<p id="publishStatus">發布次數：0</p>
+
 </div>
 
 <script>
+
+// ==============================
 // MQTT 設定
+// ==============================
+
 const broker = "wss://broker.hivemq.com:8884/mqtt";
 
 const topic = "nutc/im/s1411331044/accelerometer/data";
 
-// 連接 MQTT
 const client = mqtt.connect(broker, {
     clientId: "mobile_accel_" +
-        Math.random().toString(16).substring(2, 10),
+        Math.random().toString(16).slice(2, 10),
     clean: true,
     connectTimeout: 10000,
     reconnectPeriod: 3000
 });
 
-let sensorActive = false;
-let latestData = null;
-let publishTimer = null;
-
 client.on("connect", function() {
-    document.getElementById("status").innerText =
+    document.getElementById("mqttStatus").innerText =
         "MQTT 已連線";
 });
 
 client.on("reconnect", function() {
-    document.getElementById("status").innerText =
+    document.getElementById("mqttStatus").innerText =
         "MQTT 重新連線中...";
 });
 
-client.on("error", function(error) {
-    document.getElementById("status").innerText =
-        "MQTT 連線錯誤：" + error.message;
-});
-
 client.on("close", function() {
-    document.getElementById("status").innerText =
+    document.getElementById("mqttStatus").innerText =
         "MQTT 已斷線";
 });
 
+client.on("error", function(error) {
+    document.getElementById("mqttStatus").innerText =
+        "MQTT 錯誤：" + error.message;
+});
+
+// ==============================
+// 建立四條線的同一張圖表
+// ==============================
+
+const chart = new Chart(
+    document.getElementById("accelChart"),
+    {
+        type: "line",
+
+        data: {
+            labels: [],
+
+            datasets: [
+                {
+                    label: "X 軸",
+                    data: [],
+                    borderColor: "#ef4444",
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.2
+                },
+                {
+                    label: "Y 軸",
+                    data: [],
+                    borderColor: "#16a34a",
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.2
+                },
+                {
+                    label: "Z 軸",
+                    data: [],
+                    borderColor: "#3b82f6",
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.2
+                },
+                {
+                    label: "合成加速度",
+                    data: [],
+                    borderColor: "#a855f7",
+                    borderWidth: 3,
+                    pointRadius: 0,
+                    tension: 0.2
+                }
+            ]
+        },
+
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            animation: false,
+
+            interaction: {
+                intersect: false,
+                mode: "index"
+            },
+
+            plugins: {
+                legend: {
+                    display: true,
+                    position: "bottom"
+                }
+            },
+
+            scales: {
+                x: {
+                    title: {
+                        display: true,
+                        text: "時間"
+                    }
+                },
+
+                y: {
+                    title: {
+                        display: true,
+                        text: "加速度 (m/s²)"
+                    }
+                }
+            }
+        }
+    }
+);
+
+// ==============================
+// 更新圖表
+// ==============================
+
+function updateChart(x, y, z, total) {
+
+    const now = new Date().toLocaleTimeString();
+
+    chart.data.labels.push(now);
+
+    chart.data.datasets[0].data.push(x);
+    chart.data.datasets[1].data.push(y);
+    chart.data.datasets[2].data.push(z);
+    chart.data.datasets[3].data.push(total);
+
+    // 保留最近50筆
+    if (chart.data.labels.length > 50) {
+
+        chart.data.labels.shift();
+
+        chart.data.datasets.forEach(function(dataset) {
+            dataset.data.shift();
+        });
+
+    }
+
+    chart.update("none");
+}
+
+// ==============================
+// 感測器變數
+// ==============================
+
+let sensorActive = false;
+let latestData = null;
+let publishTimer = null;
+let publishCount = 0;
+
+// ==============================
 // 讀取手機加速度
+// ==============================
+
 function handleMotion(event) {
 
     if (!sensorActive) return;
 
     const acc = event.accelerationIncludingGravity;
 
-    if (!acc ||
+    if (
+        !acc ||
         acc.x === null ||
         acc.y === null ||
-        acc.z === null) {
-        return;
-    }
+        acc.z === null
+    ) return;
 
     const x = acc.x;
     const y = acc.y;
@@ -135,7 +323,7 @@ function handleMotion(event) {
         timestamp: Date.now()
     };
 
-    // 顯示資料
+    // 顯示數值
     document.getElementById("x").innerText =
         latestData.x.toFixed(2);
 
@@ -147,25 +335,42 @@ function handleMotion(event) {
 
     document.getElementById("total").innerText =
         latestData.total.toFixed(2);
+
+    // 更新同一張四線圖表
+    updateChart(
+        latestData.x,
+        latestData.y,
+        latestData.z,
+        latestData.total
+    );
 }
 
+// ==============================
 // 啟動感測器
+// ==============================
+
 async function startSensor() {
 
     if (sensorActive) return;
 
     try {
-        // iPhone Safari 權限處理
+
+        if (typeof DeviceMotionEvent === "undefined") {
+            alert("此瀏覽器不支援動作感測器");
+            return;
+        }
+
+        // iPhone Safari 權限
         if (
-            typeof DeviceMotionEvent !== "undefined" &&
             typeof DeviceMotionEvent.requestPermission ===
             "function"
         ) {
+
             const permission =
                 await DeviceMotionEvent.requestPermission();
 
             if (permission !== "granted") {
-                alert("請允許使用動作感測器！");
+                alert("請允許使用動作感測器");
                 return;
             }
         }
@@ -183,23 +388,36 @@ async function startSensor() {
         // 每100毫秒發布一次
         publishTimer = setInterval(function() {
 
-            if (!latestData) return;
+            if (!latestData || !client.connected) return;
 
-            if (client.connected) {
-                client.publish(
-                    topic,
-                    JSON.stringify(latestData)
-                );
-            }
+            client.publish(
+                topic,
+                JSON.stringify(latestData),
+                function(error) {
+                    if (!error) {
+                        publishCount++;
+
+                        document.getElementById(
+                            "publishStatus"
+                        ).innerText =
+                            "發布次數：" + publishCount;
+                    }
+                }
+            );
 
         }, 100);
 
-    } catch (error) {
+    } catch(error) {
+
         alert("感測器啟動失敗：" + error.message);
+
     }
 }
 
+// ==============================
 // 停止感測器
+// ==============================
+
 function stopSensor() {
 
     sensorActive = false;
