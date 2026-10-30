@@ -4,162 +4,374 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>加速度與計步監測－電腦端</title>
+  <title>地震儀 MQTT 即時監控</title>
+
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
   <style>
     body {
       font-family: Arial, sans-serif;
-      background: #f2f4f7;
+      background: #f1f4f8;
       margin: 0;
       padding: 20px;
       text-align: center;
     }
+
     h2 { color: #243447; }
+
     .panel {
       background: white;
       border-radius: 12px;
       padding: 18px;
       margin: 16px auto;
-      max-width: 850px;
+      max-width: 950px;
       box-shadow: 0 2px 8px #0001;
     }
+
     .values {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
       gap: 10px;
     }
+
     .value {
       background: #edf3fa;
-      border-radius: 8px;
       padding: 15px 5px;
+      border-radius: 8px;
     }
+
     .number {
       font-size: 27px;
       font-weight: bold;
       margin-top: 8px;
     }
-    #stepsValue {
-      font-size: 48px;
-      color: #2878d0;
-    }
+
     canvas { max-width: 100%; }
+
+    .alarm {
+      display: none;
+      background: #ffe1e1;
+      color: #c00000;
+      border: 2px solid red;
+      border-radius: 10px;
+      padding: 20px;
+      font-size: 28px;
+      font-weight: bold;
+      margin: 12px 0;
+    }
+
+    .hint {
+      color: #666;
+      font-size: 13px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 12px 18px;
+      margin: 5px;
+      font-size: 16px;
+      color: white;
+      background: #e67e22;
+      cursor: pointer;
+    }
+
     @media (max-width: 600px) {
-      .values { grid-template-columns: repeat(2, 1fr); }
+      .values {
+        grid-template-columns: repeat(2, 1fr);
+      }
     }
   </style>
 </head>
+
 <body>
-  <h2>加速度與計步監測系統－電腦端</h2>
+
+  <h2>地震儀 MQTT 即時監控系統</h2>
 
   <div class="panel">
-    <p id="mqttStatus">MQTT 連線中...</p>
-    <p id="deviceStatus">尚未收到手機資料</p>
+    <h3>MQTT 連線狀態</h3>
+    <p id="mqttStatus">連線中...</p>
+    <p id="deviceStatus">等待手機資料</p>
   </div>
 
   <div class="panel">
-    <h3>即時加速度（m/s²）</h3>
+    <h3>震動警報</h3>
+
+    <div id="alarmBox" class="alarm">
+      ⚠ 震動警報！超過 0.8 m/s²
+    </div>
+
+    <p id="alarmStatus">目前正常</p>
+    <p>警報門檻：0.8 m/s²</p>
+
+    <button onclick="enableAlarm()">啟用電腦警報聲</button>
+  </div>
+
+  <div class="panel">
+    <h3>即時三軸加速度（m/s²）</h3>
+
     <div class="values">
-      <div class="value">X 軸<div class="number" id="xValue">0.00</div></div>
-      <div class="value">Y 軸<div class="number" id="yValue">0.00</div></div>
-      <div class="value">Z 軸<div class="number" id="zValue">0.00</div></div>
-      <div class="value">合成加速度<div class="number" id="totalValue">0.00</div></div>
+      <div class="value">
+        X 軸
+        <div class="number" id="xValue">0.00</div>
+      </div>
+
+      <div class="value">
+        Y 軸
+        <div class="number" id="yValue">0.00</div>
+      </div>
+
+      <div class="value">
+        Z 軸
+        <div class="number" id="zValue">0.00</div>
+      </div>
+
+      <div class="value">
+        合成震動
+        <div class="number" id="totalValue">0.00</div>
+      </div>
     </div>
   </div>
 
   <div class="panel">
-    <h3>加速度即時圖表</h3>
-    <canvas id="accelChart"></canvas>
+    <h3>地震波形即時監控</h3>
+    <canvas id="earthquakeChart"></canvas>
+    <p class="hint">顯示最近 100 筆資料。</p>
   </div>
 
   <div class="panel">
-    <h3>手機計步結果</h3>
-    <div id="stepsValue">0</div>
-    <p>累計步數</p>
+    <h3>震動統計</h3>
+
+    <p>目前震動強度</p>
+    <div class="number" id="currentLevel">0.00 m/s²</div>
+
+    <p>接收期間最大震動值</p>
+    <div class="number" id="peakValue">0.00 m/s²</div>
+  </div>
+
+  <div class="panel">
+    <h3>手機裝置資訊</h3>
+
     <p>裝置 ID：<span id="deviceId">尚未收到</span></p>
-    <p>事件類型：<span id="eventType">尚未收到</span></p>
-    <p>最後更新：<span id="lastUpdate">尚未收到</span></p>
+    <p>最後接收時間：<span id="lastTime">尚未收到</span></p>
     <p>接收訊息數：<span id="messageCount">0</span></p>
   </div>
 
 <script>
+  // =========================
+  // 1. MQTT 設定
+  // =========================
+
   const broker = "wss://broker.hivemq.com:8884/mqtt";
-  const accelTopic = "nutc/im/s1411331044/accelerometer/data";
-  const stepsTopic = "nutc/im/1411331044/steps";
+
+  const topic =
+    "nutc/im/s1411331044/earthquake/data";
+
+  const ALARM_THRESHOLD = 0.8;
 
   let messageCount = 0;
+  let peak = 0;
 
-  // 建立圖表
-  const ctx = document.getElementById("accelChart");
+  // =========================
+  // 2. 電腦警報聲
+  // =========================
 
-  const chart = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels: [],
-      datasets: [
-        {
-          label: "X 軸",
-          data: [],
-          borderColor: "red",
-          borderWidth: 2,
-          pointRadius: 0,
-          tension: 0.2
-        },
-        {
-          label: "Y 軸",
-          data: [],
-          borderColor: "green",
-          borderWidth: 2,
-          pointRadius: 0,
-          tension: 0.2
-        },
-        {
-          label: "Z 軸",
-          data: [],
-          borderColor: "blue",
-          borderWidth: 2,
-          pointRadius: 0,
-          tension: 0.2
-        },
-        {
-          label: "合成加速度",
-          data: [],
-          borderColor: "purple",
-          borderWidth: 2,
-          pointRadius: 0,
-          tension: 0.2
+  let audioContext = null;
+  let alarmTimer = null;
+  let alarmEnabled = false;
+  let alarmActive = false;
+
+  async function enableAlarm() {
+    try {
+      const AudioContextClass =
+        window.AudioContext || window.webkitAudioContext;
+
+      if (!AudioContextClass) {
+        alert("此瀏覽器不支援警報聲");
+        return;
+      }
+
+      if (!audioContext) {
+        audioContext = new AudioContextClass();
+      }
+
+      if (audioContext.state === "suspended") {
+        await audioContext.resume();
+      }
+
+      alarmEnabled = true;
+
+      alert("電腦警報聲已啟用");
+
+      if (alarmActive) {
+        startAlarmSound();
+      }
+
+    } catch (error) {
+      console.error(error);
+      alert("無法啟用警報聲");
+    }
+  }
+
+  function beep() {
+    if (!audioContext || !alarmEnabled) return;
+
+    if (audioContext.state !== "running") return;
+
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+
+    oscillator.type = "sine";
+    oscillator.frequency.value = 880;
+
+    gain.gain.setValueAtTime(
+      0.25,
+      audioContext.currentTime
+    );
+
+    gain.gain.exponentialRampToValueAtTime(
+      0.001,
+      audioContext.currentTime + 0.3
+    );
+
+    oscillator.connect(gain);
+    gain.connect(audioContext.destination);
+
+    oscillator.start();
+    oscillator.stop(audioContext.currentTime + 0.3);
+  }
+
+  function startAlarmSound() {
+    if (!alarmEnabled || alarmTimer !== null) return;
+
+    beep();
+
+    alarmTimer = setInterval(() => {
+      beep();
+    }, 600);
+  }
+
+  function stopAlarmSound() {
+    if (alarmTimer !== null) {
+      clearInterval(alarmTimer);
+      alarmTimer = null;
+    }
+  }
+
+  function checkAlarm(total) {
+    const box = document.getElementById("alarmBox");
+    const status = document.getElementById("alarmStatus");
+
+    if (total > ALARM_THRESHOLD) {
+      alarmActive = true;
+
+      box.style.display = "block";
+
+      status.textContent =
+        "⚠ 警報中！震動超過 0.8 m/s²";
+
+      status.style.color = "red";
+
+      startAlarmSound();
+
+    } else {
+      alarmActive = false;
+
+      box.style.display = "none";
+
+      status.textContent = "目前正常";
+      status.style.color = "green";
+
+      stopAlarmSound();
+    }
+  }
+
+  // =========================
+  // 3. 建立地震波形圖
+  // =========================
+
+  const chart = new Chart(
+    document.getElementById("earthquakeChart"),
+    {
+      type: "line",
+
+      data: {
+        labels: [],
+
+        datasets: [
+          {
+            label: "X 軸",
+            data: [],
+            borderColor: "red",
+            borderWidth: 2,
+            pointRadius: 0
+          },
+          {
+            label: "Y 軸",
+            data: [],
+            borderColor: "green",
+            borderWidth: 2,
+            pointRadius: 0
+          },
+          {
+            label: "Z 軸",
+            data: [],
+            borderColor: "blue",
+            borderWidth: 2,
+            pointRadius: 0
+          }
+        ]
+      },
+
+      options: {
+        responsive: true,
+        animation: false,
+
+        scales: {
+          x: {
+            display: false
+          },
+
+          y: {
+            title: {
+              display: true,
+              text: "加速度（m/s²）"
+            }
+          }
         }
-      ]
-    },
-    options: {
-      responsive: true,
-      animation: false,
-      scales: {
-        x: { display: false },
-        y: { title: { display: true, text: "m/s²" } }
       }
     }
-  });
+  );
 
-  function updateChart(x, y, z, total) {
-    chart.data.labels.push(new Date().toLocaleTimeString());
+  function updateChart(x, y, z) {
+    chart.data.labels.push(
+      new Date().toLocaleTimeString()
+    );
 
     chart.data.datasets[0].data.push(x);
     chart.data.datasets[1].data.push(y);
     chart.data.datasets[2].data.push(z);
-    chart.data.datasets[3].data.push(total);
 
-    if (chart.data.labels.length > 50) {
+    if (chart.data.labels.length > 100) {
       chart.data.labels.shift();
-      chart.data.datasets.forEach(dataset => dataset.data.shift());
+
+      chart.data.datasets.forEach(dataset => {
+        dataset.data.shift();
+      });
     }
 
     chart.update("none");
   }
 
-  // MQTT 連線
+  // =========================
+  // 4. MQTT 連線
+  // =========================
+
   const client = mqtt.connect(broker, {
-    clientId: "pc_" + Math.random().toString(16).slice(2, 10),
+    clientId:
+      "eq_pc_" + Math.random().toString(16).slice(2, 10),
+
     clean: true,
     connectTimeout: 10000,
     reconnectPeriod: 3000
@@ -167,15 +379,15 @@
 
   client.on("connect", () => {
     document.getElementById("mqttStatus").textContent =
-      "MQTT 已連線，等待手機資料...";
+      "MQTT 已連線";
 
-    client.subscribe([accelTopic, stepsTopic], (err) => {
-      if (err) {
+    client.subscribe(topic, (error) => {
+      if (error) {
         document.getElementById("mqttStatus").textContent =
-          "訂閱 Topic 失敗";
+          "Topic 訂閱失敗";
       } else {
         document.getElementById("mqttStatus").textContent =
-          "MQTT 已連線，已訂閱加速度與計步資料";
+          "已訂閱地震儀資料，等待手機傳送";
       }
     });
   });
@@ -185,62 +397,89 @@
       "MQTT 重新連線中...";
   });
 
-  client.on("error", (err) => {
-    console.error("MQTT 錯誤：", err);
+  client.on("offline", () => {
+    document.getElementById("mqttStatus").textContent =
+      "MQTT 離線";
+  });
+
+  client.on("error", (error) => {
+    console.error(error);
+
     document.getElementById("mqttStatus").textContent =
       "MQTT 連線錯誤";
   });
 
-  // 接收手機資料
-  client.on("message", (topic, message) => {
+  // =========================
+  // 5. 接收手機資料
+  // =========================
+
+  client.on("message", (receivedTopic, message) => {
+
+    if (receivedTopic !== topic) return;
+
     try {
       const data = JSON.parse(message.toString());
 
+      const x = Number(data.x) || 0;
+      const y = Number(data.y) || 0;
+      const z = Number(data.z) || 0;
+
+      const total = Math.sqrt(
+        x*x + y*y + z*z
+      );
+
+      // 更新數字
+      document.getElementById("xValue").textContent =
+        x.toFixed(2);
+
+      document.getElementById("yValue").textContent =
+        y.toFixed(2);
+
+      document.getElementById("zValue").textContent =
+        z.toFixed(2);
+
+      document.getElementById("totalValue").textContent =
+        total.toFixed(2);
+
+      document.getElementById("currentLevel").textContent =
+        total.toFixed(2) + " m/s²";
+
+      // 更新最大值
+      if (total > peak) {
+        peak = total;
+
+        document.getElementById("peakValue").textContent =
+          peak.toFixed(2) + " m/s²";
+      }
+
+      // 更新圖表
+      updateChart(x, y, z);
+
+      // 更新警報
+      checkAlarm(total);
+
+      // 更新裝置資訊
       messageCount++;
+
       document.getElementById("messageCount").textContent =
         messageCount;
 
-      if (topic === accelTopic) {
-        const x = Number(data.x) || 0;
-        const y = Number(data.y) || 0;
-        const z = Number(data.z) || 0;
-        const total = Math.sqrt(x*x + y*y + z*z);
+      document.getElementById("deviceId").textContent =
+        data.deviceId || "未知";
 
-        document.getElementById("xValue").textContent = x.toFixed(2);
-        document.getElementById("yValue").textContent = y.toFixed(2);
-        document.getElementById("zValue").textContent = z.toFixed(2);
-        document.getElementById("totalValue").textContent =
-          total.toFixed(2);
+      document.getElementById("lastTime").textContent =
+        data.timestamp
+          ? new Date(data.timestamp).toLocaleString()
+          : new Date().toLocaleString();
 
-        updateChart(x, y, z, total);
-
-        document.getElementById("deviceStatus").textContent =
-          "已接收手機加速度資料";
-      }
-
-      if (topic === stepsTopic) {
-        document.getElementById("stepsValue").textContent =
-          Number(data.steps) || 0;
-
-        document.getElementById("deviceId").textContent =
-          data.deviceId || "未知";
-
-        document.getElementById("eventType").textContent =
-          data.eventType || "未知";
-
-        document.getElementById("lastUpdate").textContent =
-          data.timestamp
-            ? new Date(data.timestamp).toLocaleString()
-            : new Date().toLocaleString();
-
-        document.getElementById("deviceStatus").textContent =
-          "已接收手機計步資料";
-      }
+      document.getElementById("deviceStatus").textContent =
+        "正在接收手機地震儀資料";
 
     } catch (error) {
       console.error("資料解析失敗：", error);
     }
   });
 </script>
+
 </body>
 </html>
