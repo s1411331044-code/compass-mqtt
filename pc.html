@@ -2,393 +2,245 @@
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PC 三軸加速度監測系統</title>
-
-<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
-<style>
-body {
-    font-family: Arial, sans-serif;
-    background: #edf2f7;
-    text-align: center;
-    padding: 20px;
-}
-.container {
-    max-width: 1000px;
-    margin: auto;
-    background: white;
-    padding: 25px;
-    border-radius: 18px;
-    box-shadow: 0 3px 15px #ccc;
-}
-h1 { color: #2563eb; }
-
-.status {
-    color: #d97706;
-    font-size: 18px;
-    font-weight: bold;
-}
-
-.grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-}
-
-.data {
-    background: #eaf2ff;
-    padding: 18px 8px;
-    border-radius: 12px;
-}
-
-.value {
-    font-size: 27px;
-    font-weight: bold;
-}
-
-.unit {
-    color: #64748b;
-    font-size: 13px;
-}
-
-.total {
-    background: #f3e8ff;
-}
-
-.chartBox {
-    margin-top: 25px;
-    padding: 15px;
-    border: 1px solid #ddd;
-    border-radius: 12px;
-}
-
-.info {
-    margin-top: 20px;
-    color: #64748b;
-}
-
-@media(max-width:650px) {
-    .grid {
-        grid-template-columns: repeat(2, 1fr);
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>加速度與計步監測－電腦端</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f2f4f7;
+      margin: 0;
+      padding: 20px;
+      text-align: center;
     }
-}
-</style>
+    h2 { color: #243447; }
+    .panel {
+      background: white;
+      border-radius: 12px;
+      padding: 18px;
+      margin: 16px auto;
+      max-width: 850px;
+      box-shadow: 0 2px 8px #0001;
+    }
+    .values {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+    .value {
+      background: #edf3fa;
+      border-radius: 8px;
+      padding: 15px 5px;
+    }
+    .number {
+      font-size: 27px;
+      font-weight: bold;
+      margin-top: 8px;
+    }
+    #stepsValue {
+      font-size: 48px;
+      color: #2878d0;
+    }
+    canvas { max-width: 100%; }
+    @media (max-width: 600px) {
+      .values { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
 </head>
-
 <body>
+  <h2>加速度與計步監測系統－電腦端</h2>
 
-<div class="container">
+  <div class="panel">
+    <p id="mqttStatus">MQTT 連線中...</p>
+    <p id="deviceStatus">尚未收到手機資料</p>
+  </div>
 
-<h1>PC 三軸加速度監測系統</h1>
-
-<p class="status" id="status">
-MQTT 連線中...
-</p>
-
-<div class="grid">
-
-    <div class="data">
-        <h3>X 軸</h3>
-        <div class="value" id="x">0.00</div>
-        <div class="unit">m/s²</div>
+  <div class="panel">
+    <h3>即時加速度（m/s²）</h3>
+    <div class="values">
+      <div class="value">X 軸<div class="number" id="xValue">0.00</div></div>
+      <div class="value">Y 軸<div class="number" id="yValue">0.00</div></div>
+      <div class="value">Z 軸<div class="number" id="zValue">0.00</div></div>
+      <div class="value">合成加速度<div class="number" id="totalValue">0.00</div></div>
     </div>
+  </div>
 
-    <div class="data">
-        <h3>Y 軸</h3>
-        <div class="value" id="y">0.00</div>
-        <div class="unit">m/s²</div>
-    </div>
-
-    <div class="data">
-        <h3>Z 軸</h3>
-        <div class="value" id="z">0.00</div>
-        <div class="unit">m/s²</div>
-    </div>
-
-    <div class="data total">
-        <h3>合成加速度</h3>
-        <div class="value" id="total">0.00</div>
-        <div class="unit">m/s²</div>
-    </div>
-
-</div>
-
-<div class="chartBox">
-
-    <h3>即時四軸加速度折線圖</h3>
-
+  <div class="panel">
+    <h3>加速度即時圖表</h3>
     <canvas id="accelChart"></canvas>
+  </div>
 
-</div>
-
-<div class="info">
-
-    <p>MQTT Topic：</p>
-
-    <p>nutc/im/s1411331044/accelerometer/data</p>
-
-    <p>最後接收時間：
-        <span id="time">尚未接收</span>
-    </p>
-
-    <p>接收封包數：
-        <span id="count">0</span>
-    </p>
-
-</div>
-
-</div>
+  <div class="panel">
+    <h3>手機計步結果</h3>
+    <div id="stepsValue">0</div>
+    <p>累計步數</p>
+    <p>裝置 ID：<span id="deviceId">尚未收到</span></p>
+    <p>事件類型：<span id="eventType">尚未收到</span></p>
+    <p>最後更新：<span id="lastUpdate">尚未收到</span></p>
+    <p>接收訊息數：<span id="messageCount">0</span></p>
+  </div>
 
 <script>
+  const broker = "wss://broker.hivemq.com:8884/mqtt";
+  const accelTopic = "nutc/im/s1411331044/accelerometer/data";
+  const stepsTopic = "nutc/im/1411331044/steps";
 
-// ==============================
-// MQTT 設定
-// ==============================
+  let messageCount = 0;
 
-const broker = "wss://broker.hivemq.com:8884/mqtt";
+  // 建立圖表
+  const ctx = document.getElementById("accelChart");
 
-const topic = "nutc/im/s1411331044/accelerometer/data";
-
-const client = mqtt.connect(broker, {
-    clientId: "pc_accel_" +
-        Math.random().toString(16).slice(2, 10),
-    clean: true,
-    connectTimeout: 10000,
-    reconnectPeriod: 3000
-});
-
-let count = 0;
-
-// ==============================
-// 建立同一張四線圖表
-// ==============================
-
-const chart = new Chart(
-    document.getElementById("accelChart"),
-    {
-        type: "line",
-
-        data: {
-            labels: [],
-
-            datasets: [
-                {
-                    label: "X 軸",
-                    data: [],
-                    borderColor: "#ef4444",
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    tension: 0.2
-                },
-                {
-                    label: "Y 軸",
-                    data: [],
-                    borderColor: "#16a34a",
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    tension: 0.2
-                },
-                {
-                    label: "Z 軸",
-                    data: [],
-                    borderColor: "#3b82f6",
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    tension: 0.2
-                },
-                {
-                    label: "合成加速度",
-                    data: [],
-                    borderColor: "#a855f7",
-                    borderWidth: 3,
-                    pointRadius: 0,
-                    tension: 0.2
-                }
-            ]
+  const chart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: "X 軸",
+          data: [],
+          borderColor: "red",
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.2
         },
-
-        options: {
-            responsive: true,
-            maintainAspectRatio: true,
-            animation: false,
-
-            interaction: {
-                intersect: false,
-                mode: "index"
-            },
-
-            plugins: {
-                legend: {
-                    display: true,
-                    position: "bottom"
-                }
-            },
-
-            scales: {
-                x: {
-                    title: {
-                        display: true,
-                        text: "時間"
-                    }
-                },
-
-                y: {
-                    title: {
-                        display: true,
-                        text: "加速度 (m/s²)"
-                    }
-                }
-            }
+        {
+          label: "Y 軸",
+          data: [],
+          borderColor: "green",
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.2
+        },
+        {
+          label: "Z 軸",
+          data: [],
+          borderColor: "blue",
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.2
+        },
+        {
+          label: "合成加速度",
+          data: [],
+          borderColor: "purple",
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.2
         }
+      ]
+    },
+    options: {
+      responsive: true,
+      animation: false,
+      scales: {
+        x: { display: false },
+        y: { title: { display: true, text: "m/s²" } }
+      }
     }
-);
+  });
 
-// ==============================
-// 更新折線圖
-// ==============================
-
-function updateChart(x, y, z, total) {
-
-    const now = new Date().toLocaleTimeString();
-
-    chart.data.labels.push(now);
+  function updateChart(x, y, z, total) {
+    chart.data.labels.push(new Date().toLocaleTimeString());
 
     chart.data.datasets[0].data.push(x);
     chart.data.datasets[1].data.push(y);
     chart.data.datasets[2].data.push(z);
     chart.data.datasets[3].data.push(total);
 
-    // 只保留最近50筆資料
     if (chart.data.labels.length > 50) {
-
-        chart.data.labels.shift();
-
-        chart.data.datasets.forEach(function(dataset) {
-            dataset.data.shift();
-        });
-
+      chart.data.labels.shift();
+      chart.data.datasets.forEach(dataset => dataset.data.shift());
     }
 
     chart.update("none");
-}
+  }
 
-// ==============================
-// MQTT 連線成功
-// ==============================
+  // MQTT 連線
+  const client = mqtt.connect(broker, {
+    clientId: "pc_" + Math.random().toString(16).slice(2, 10),
+    clean: true,
+    connectTimeout: 10000,
+    reconnectPeriod: 3000
+  });
 
-client.on("connect", function() {
+  client.on("connect", () => {
+    document.getElementById("mqttStatus").textContent =
+      "MQTT 已連線，等待手機資料...";
 
-    document.getElementById("status").innerText =
-        "MQTT 已連線，正在訂閱資料...";
-
-    client.subscribe(topic, function(error) {
-
-        if (error) {
-
-            document.getElementById("status").innerText =
-                "訂閱失敗";
-
-        } else {
-
-            document.getElementById("status").innerText =
-                "已訂閱，等待手機資料";
-
-        }
-
+    client.subscribe([accelTopic, stepsTopic], (err) => {
+      if (err) {
+        document.getElementById("mqttStatus").textContent =
+          "訂閱 Topic 失敗";
+      } else {
+        document.getElementById("mqttStatus").textContent =
+          "MQTT 已連線，已訂閱加速度與計步資料";
+      }
     });
+  });
 
-});
+  client.on("reconnect", () => {
+    document.getElementById("mqttStatus").textContent =
+      "MQTT 重新連線中...";
+  });
 
-// ==============================
-// MQTT 重新連線
-// ==============================
+  client.on("error", (err) => {
+    console.error("MQTT 錯誤：", err);
+    document.getElementById("mqttStatus").textContent =
+      "MQTT 連線錯誤";
+  });
 
-client.on("reconnect", function() {
-
-    document.getElementById("status").innerText =
-        "MQTT 重新連線中...";
-
-});
-
-client.on("close", function() {
-
-    document.getElementById("status").innerText =
-        "MQTT 已斷線";
-
-});
-
-client.on("error", function(error) {
-
-    document.getElementById("status").innerText =
-        "MQTT 錯誤：" + error.message;
-
-});
-
-// ==============================
-// 接收手機資料
-// ==============================
-
-client.on("message", function(receivedTopic, message) {
-
-    if (receivedTopic !== topic) return;
-
+  // 接收手機資料
+  client.on("message", (topic, message) => {
     try {
+      const data = JSON.parse(message.toString());
 
-        const data = JSON.parse(message.toString());
+      messageCount++;
+      document.getElementById("messageCount").textContent =
+        messageCount;
 
-        const x = Number(data.x);
-        const y = Number(data.y);
-        const z = Number(data.z);
+      if (topic === accelTopic) {
+        const x = Number(data.x) || 0;
+        const y = Number(data.y) || 0;
+        const z = Number(data.z) || 0;
+        const total = Math.sqrt(x*x + y*y + z*z);
 
-        if (![x, y, z].every(Number.isFinite)) {
-            return;
-        }
+        document.getElementById("xValue").textContent = x.toFixed(2);
+        document.getElementById("yValue").textContent = y.toFixed(2);
+        document.getElementById("zValue").textContent = z.toFixed(2);
+        document.getElementById("totalValue").textContent =
+          total.toFixed(2);
 
-        // 計算合成加速度
-        const total = Math.sqrt(
-            x*x + y*y + z*z
-        );
-
-        // 更新數值
-        document.getElementById("x").innerText =
-            x.toFixed(2);
-
-        document.getElementById("y").innerText =
-            y.toFixed(2);
-
-        document.getElementById("z").innerText =
-            z.toFixed(2);
-
-        document.getElementById("total").innerText =
-            total.toFixed(2);
-
-        // 更新同一張四線圖表
         updateChart(x, y, z, total);
 
-        // 更新接收時間
-        document.getElementById("time").innerText =
-            new Date().toLocaleTimeString();
+        document.getElementById("deviceStatus").textContent =
+          "已接收手機加速度資料";
+      }
 
-        count++;
+      if (topic === stepsTopic) {
+        document.getElementById("stepsValue").textContent =
+          Number(data.steps) || 0;
 
-        document.getElementById("count").innerText =
-            count;
+        document.getElementById("deviceId").textContent =
+          data.deviceId || "未知";
 
-        document.getElementById("status").innerText =
-            "正在接收手機加速度資料";
+        document.getElementById("eventType").textContent =
+          data.eventType || "未知";
 
-    } catch(error) {
+        document.getElementById("lastUpdate").textContent =
+          data.timestamp
+            ? new Date(data.timestamp).toLocaleString()
+            : new Date().toLocaleString();
 
-        console.error("資料解析錯誤：", error);
+        document.getElementById("deviceStatus").textContent =
+          "已接收手機計步資料";
+      }
 
+    } catch (error) {
+      console.error("資料解析失敗：", error);
     }
-
-});
-
+  });
 </script>
-
 </body>
 </html>

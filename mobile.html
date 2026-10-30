@@ -2,443 +2,400 @@
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>手機三軸加速度監測系統</title>
-
-<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
-<style>
-body {
-    font-family: Arial, sans-serif;
-    background: #eef2f7;
-    text-align: center;
-    padding: 15px;
-}
-.container {
-    max-width: 850px;
-    margin: auto;
-    background: white;
-    padding: 20px;
-    border-radius: 16px;
-    box-shadow: 0 3px 12px #ccc;
-}
-h2 { color: #2563eb; }
-
-.status {
-    color: #d97706;
-    font-weight: bold;
-}
-
-.grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
-}
-
-.data {
-    background: #eaf2ff;
-    padding: 15px;
-    border-radius: 12px;
-}
-
-.value {
-    font-size: 26px;
-    font-weight: bold;
-}
-
-.chartBox {
-    margin-top: 20px;
-    padding: 12px;
-    background: #fff;
-    border: 1px solid #ddd;
-    border-radius: 12px;
-}
-
-button {
-    padding: 13px 22px;
-    margin: 8px;
-    border: none;
-    border-radius: 9px;
-    background: #2563eb;
-    color: white;
-    font-size: 16px;
-}
-
-.stop {
-    background: #dc2626;
-}
-
-@media(max-width:500px) {
-    .grid {
-        grid-template-columns: 1fr 1fr;
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>加速度與計步監測系統</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f2f4f7;
+      margin: 0;
+      padding: 18px;
+      text-align: center;
     }
-}
-</style>
+    h2 { color: #243447; }
+    .panel {
+      background: white;
+      border-radius: 12px;
+      padding: 16px;
+      margin: 14px auto;
+      max-width: 650px;
+      box-shadow: 0 2px 8px #0001;
+    }
+    .values {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+    .value {
+      background: #edf3fa;
+      border-radius: 8px;
+      padding: 14px 5px;
+    }
+    .number {
+      font-size: 25px;
+      font-weight: bold;
+      margin-top: 6px;
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 12px 18px;
+      margin: 5px;
+      font-size: 16px;
+      cursor: pointer;
+      color: white;
+      background: #2878d0;
+    }
+    button.stop { background: #d9534f; }
+    button.reset { background: #666; }
+    input[type="range"] { width: 85%; }
+    #status { color: #555; }
+    canvas { max-width: 100%; }
+  </style>
 </head>
-
 <body>
+  <h2>手機加速度與計步監測</h2>
 
-<div class="container">
+  <div class="panel">
+    <p id="mqttStatus">MQTT 連線中...</p>
+    <p id="sensorStatus">感測器尚未啟動</p>
+    <button onclick="startSensor()">開始監測</button>
+    <button class="stop" onclick="stopSensor()">停止監測</button>
+  </div>
 
-<h2>手機三軸加速度監測</h2>
-
-<p class="status" id="mqttStatus">MQTT 連線中...</p>
-<p id="sensorStatus">感測器尚未啟動</p>
-
-<div class="grid">
-
-    <div class="data">
-        X 軸加速度
-        <div class="value" id="x">0.00</div>
-        m/s²
+  <div class="panel">
+    <h3>即時加速度（m/s²）</h3>
+    <div class="values">
+      <div class="value">X 軸<div class="number" id="xValue">0.00</div></div>
+      <div class="value">Y 軸<div class="number" id="yValue">0.00</div></div>
+      <div class="value">Z 軸<div class="number" id="zValue">0.00</div></div>
+      <div class="value">合成加速度<div class="number" id="totalValue">0.00</div></div>
     </div>
+  </div>
 
-    <div class="data">
-        Y 軸加速度
-        <div class="value" id="y">0.00</div>
-        m/s²
-    </div>
-
-    <div class="data">
-        Z 軸加速度
-        <div class="value" id="z">0.00</div>
-        m/s²
-    </div>
-
-    <div class="data">
-        合成加速度
-        <div class="value" id="total">0.00</div>
-        m/s²
-    </div>
-
-</div>
-
-<div class="chartBox">
-    <h3>即時四軸加速度折線圖</h3>
+  <div class="panel">
+    <h3>加速度即時圖表</h3>
     <canvas id="accelChart"></canvas>
-</div>
+  </div>
 
-<button onclick="startSensor()">開始感測</button>
-<button class="stop" onclick="stopSensor()">停止感測</button>
-
-<p>MQTT Topic</p>
-<p>nutc/im/s1411331044/accelerometer/data</p>
-
-<p id="publishStatus">發布次數：0</p>
-
-</div>
+  <div class="panel">
+    <h3>計步器</h3>
+    <div class="number" style="font-size:42px">
+      <span id="stepsValue">0</span> 步
+    </div>
+    <p id="stepStatus">等待開始</p>
+    <button class="reset" onclick="resetSteps()">步數歸零</button>
+    <hr>
+    <p>計步靈敏度：<span id="sensitivityValue">1.20</span></p>
+    <input
+      id="sensitivity"
+      type="range"
+      min="0.5"
+      max="3"
+      step="0.1"
+      value="1.2"
+      oninput="changeSensitivity(this.value)"
+    >
+    <p style="font-size:13px;color:#666">
+      數值越小越敏感；數值越大越不容易計步。
+    </p>
+  </div>
 
 <script>
+  // MQTT 設定
+  const broker = "wss://broker.hivemq.com:8884/mqtt";
+  const accelTopic = "nutc/im/s1411331044/accelerometer/data";
+  const stepsTopic = "nutc/im/1411331044/steps";
 
-// ==============================
-// MQTT 設定
-// ==============================
+  const deviceId = localStorage.getItem("deviceId") ||
+    ("phone-" + Math.random().toString(36).slice(2, 10));
 
-const broker = "wss://broker.hivemq.com:8884/mqtt";
+  localStorage.setItem("deviceId", deviceId);
 
-const topic = "nutc/im/s1411331044/accelerometer/data";
+  let client = null;
+  let sensorRunning = false;
+  let publishTimer = null;
+  let updateTimer = null;
 
-const client = mqtt.connect(broker, {
-    clientId: "mobile_accel_" +
-        Math.random().toString(16).slice(2, 10),
+  let latestData = { x: 0, y: 0, z: 0, total: 0 };
+  let steps = 0;
+  let sensitivity = 1.2;
+
+  // 計步演算法資料
+  let magnitudeHistory = [];
+  let previousMagnitude = null;
+  let peakCandidate = null;
+  let lastStepTime = 0;
+  const minStepInterval = 300;
+
+  // MQTT 連線
+  client = mqtt.connect(broker, {
+    clientId: "mobile_" + Math.random().toString(16).slice(2, 10),
     clean: true,
     connectTimeout: 10000,
     reconnectPeriod: 3000
-});
+  });
 
-client.on("connect", function() {
-    document.getElementById("mqttStatus").innerText =
-        "MQTT 已連線";
-});
+  client.on("connect", () => {
+    document.getElementById("mqttStatus").textContent = "MQTT 已連線";
+  });
 
-client.on("reconnect", function() {
-    document.getElementById("mqttStatus").innerText =
-        "MQTT 重新連線中...";
-});
+  client.on("reconnect", () => {
+    document.getElementById("mqttStatus").textContent = "MQTT 重新連線中...";
+  });
 
-client.on("close", function() {
-    document.getElementById("mqttStatus").innerText =
-        "MQTT 已斷線";
-});
+  client.on("error", (err) => {
+    console.error("MQTT 錯誤：", err);
+    document.getElementById("mqttStatus").textContent = "MQTT 連線錯誤";
+  });
 
-client.on("error", function(error) {
-    document.getElementById("mqttStatus").innerText =
-        "MQTT 錯誤：" + error.message;
-});
+  // 加速度圖表
+  const ctx = document.getElementById("accelChart");
 
-// ==============================
-// 建立四條線的同一張圖表
-// ==============================
-
-const chart = new Chart(
-    document.getElementById("accelChart"),
-    {
-        type: "line",
-
-        data: {
-            labels: [],
-
-            datasets: [
-                {
-                    label: "X 軸",
-                    data: [],
-                    borderColor: "#ef4444",
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    tension: 0.2
-                },
-                {
-                    label: "Y 軸",
-                    data: [],
-                    borderColor: "#16a34a",
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    tension: 0.2
-                },
-                {
-                    label: "Z 軸",
-                    data: [],
-                    borderColor: "#3b82f6",
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    tension: 0.2
-                },
-                {
-                    label: "合成加速度",
-                    data: [],
-                    borderColor: "#a855f7",
-                    borderWidth: 3,
-                    pointRadius: 0,
-                    tension: 0.2
-                }
-            ]
+  const chart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: "X 軸",
+          data: [],
+          borderColor: "red",
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.2
         },
-
-        options: {
-            responsive: true,
-            maintainAspectRatio: true,
-            animation: false,
-
-            interaction: {
-                intersect: false,
-                mode: "index"
-            },
-
-            plugins: {
-                legend: {
-                    display: true,
-                    position: "bottom"
-                }
-            },
-
-            scales: {
-                x: {
-                    title: {
-                        display: true,
-                        text: "時間"
-                    }
-                },
-
-                y: {
-                    title: {
-                        display: true,
-                        text: "加速度 (m/s²)"
-                    }
-                }
-            }
+        {
+          label: "Y 軸",
+          data: [],
+          borderColor: "green",
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.2
+        },
+        {
+          label: "Z 軸",
+          data: [],
+          borderColor: "blue",
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.2
+        },
+        {
+          label: "合成加速度",
+          data: [],
+          borderColor: "purple",
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.2
         }
+      ]
+    },
+    options: {
+      responsive: true,
+      animation: false,
+      scales: {
+        x: { display: false },
+        y: { title: { display: true, text: "m/s²" } }
+      }
     }
-);
+  });
 
-// ==============================
-// 更新圖表
-// ==============================
+  function updateChart(x, y, z, total) {
+    const time = new Date().toLocaleTimeString();
 
-function updateChart(x, y, z, total) {
-
-    const now = new Date().toLocaleTimeString();
-
-    chart.data.labels.push(now);
-
+    chart.data.labels.push(time);
     chart.data.datasets[0].data.push(x);
     chart.data.datasets[1].data.push(y);
     chart.data.datasets[2].data.push(z);
     chart.data.datasets[3].data.push(total);
 
-    // 保留最近50筆
     if (chart.data.labels.length > 50) {
-
-        chart.data.labels.shift();
-
-        chart.data.datasets.forEach(function(dataset) {
-            dataset.data.shift();
-        });
-
+      chart.data.labels.shift();
+      chart.data.datasets.forEach(dataset => dataset.data.shift());
     }
 
     chart.update("none");
-}
+  }
 
-// ==============================
-// 感測器變數
-// ==============================
+  // 感測器資料
+  function handleMotion(event) {
+    const a = event.accelerationIncludingGravity;
 
-let sensorActive = false;
-let latestData = null;
-let publishTimer = null;
-let publishCount = 0;
+    if (!a) return;
 
-// ==============================
-// 讀取手機加速度
-// ==============================
+    const x = a.x ?? 0;
+    const y = a.y ?? 0;
+    const z = a.z ?? 0;
+    const total = Math.sqrt(x*x + y*y + z*z);
 
-function handleMotion(event) {
+    latestData = { x, y, z, total };
 
-    if (!sensorActive) return;
+    document.getElementById("xValue").textContent = x.toFixed(2);
+    document.getElementById("yValue").textContent = y.toFixed(2);
+    document.getElementById("zValue").textContent = z.toFixed(2);
+    document.getElementById("totalValue").textContent = total.toFixed(2);
 
-    const acc = event.accelerationIncludingGravity;
+    updateChart(x, y, z, total);
+    detectStep(total);
+  }
 
+  // 簡易計步：利用合成加速度的局部波峰判斷步伐
+  function detectStep(magnitude) {
+    magnitudeHistory.push(magnitude);
+
+    if (magnitudeHistory.length > 20) {
+      magnitudeHistory.shift();
+    }
+
+    if (magnitudeHistory.length < 10) {
+      previousMagnitude = magnitude;
+      return;
+    }
+
+    const baseline =
+      magnitudeHistory.reduce((sum, value) => sum + value, 0) /
+      magnitudeHistory.length;
+
+    if (peakCandidate === null) {
+      peakCandidate = magnitude;
+    }
+
+    if (magnitude > peakCandidate) {
+      peakCandidate = magnitude;
+    }
+
+    // 波峰開始下降時，檢查波峰是否超過靈敏度門檻
     if (
-        !acc ||
-        acc.x === null ||
-        acc.y === null ||
-        acc.z === null
-    ) return;
+      previousMagnitude !== null &&
+      magnitude < previousMagnitude &&
+      previousMagnitude >= peakCandidate
+    ) {
+      const now = Date.now();
+      const difference = peakCandidate - baseline;
 
-    const x = acc.x;
-    const y = acc.y;
-    const z = acc.z;
+      if (
+        difference >= sensitivity &&
+        now - lastStepTime >= minStepInterval
+      ) {
+        steps++;
+        lastStepTime = now;
+        document.getElementById("stepsValue").textContent = steps;
+        document.getElementById("stepStatus").textContent = "已偵測到一步";
+        publishSteps("step");
+      }
 
-    const total = Math.sqrt(
-        x*x + y*y + z*z
-    );
+      peakCandidate = magnitude;
+    }
 
-    latestData = {
-        x: Number(x.toFixed(3)),
-        y: Number(y.toFixed(3)),
-        z: Number(z.toFixed(3)),
-        total: Number(total.toFixed(3)),
-        timestamp: Date.now()
-    };
+    previousMagnitude = magnitude;
+  }
 
-    // 顯示數值
-    document.getElementById("x").innerText =
-        latestData.x.toFixed(2);
-
-    document.getElementById("y").innerText =
-        latestData.y.toFixed(2);
-
-    document.getElementById("z").innerText =
-        latestData.z.toFixed(2);
-
-    document.getElementById("total").innerText =
-        latestData.total.toFixed(2);
-
-    // 更新同一張四線圖表
-    updateChart(
-        latestData.x,
-        latestData.y,
-        latestData.z,
-        latestData.total
-    );
-}
-
-// ==============================
-// 啟動感測器
-// ==============================
-
-async function startSensor() {
-
-    if (sensorActive) return;
+  // 開始感測器
+  async function startSensor() {
+    if (sensorRunning) return;
 
     try {
+      // iPhone Safari 需要使用者按鈕觸發權限請求
+      if (
+        typeof DeviceMotionEvent !== "undefined" &&
+        typeof DeviceMotionEvent.requestPermission === "function"
+      ) {
+        const permission = await DeviceMotionEvent.requestPermission();
 
-        if (typeof DeviceMotionEvent === "undefined") {
-            alert("此瀏覽器不支援動作感測器");
-            return;
+        if (permission !== "granted") {
+          alert("沒有取得動作感測器權限");
+          return;
         }
+      }
 
-        // iPhone Safari 權限
-        if (
-            typeof DeviceMotionEvent.requestPermission ===
-            "function"
-        ) {
+      window.addEventListener("devicemotion", handleMotion);
+      sensorRunning = true;
 
-            const permission =
-                await DeviceMotionEvent.requestPermission();
+      document.getElementById("sensorStatus").textContent =
+        "感測器運作中";
 
-            if (permission !== "granted") {
-                alert("請允許使用動作感測器");
-                return;
-            }
+      document.getElementById("stepStatus").textContent =
+        "計步器運作中";
+
+      // 每 100ms 發布加速度
+      publishTimer = setInterval(() => {
+        if (client && client.connected) {
+          client.publish(accelTopic, JSON.stringify({
+            ...latestData,
+            deviceId,
+            timestamp: Date.now()
+          }));
         }
+      }, 100);
 
-        window.addEventListener(
-            "devicemotion",
-            handleMotion
-        );
+      // 每 5 秒發布一次目前步數
+      updateTimer = setInterval(() => {
+        publishSteps("update");
+      }, 5000);
 
-        sensorActive = true;
-
-        document.getElementById("sensorStatus").innerText =
-            "感測器運作中";
-
-        // 每100毫秒發布一次
-        publishTimer = setInterval(function() {
-
-            if (!latestData || !client.connected) return;
-
-            client.publish(
-                topic,
-                JSON.stringify(latestData),
-                function(error) {
-                    if (!error) {
-                        publishCount++;
-
-                        document.getElementById(
-                            "publishStatus"
-                        ).innerText =
-                            "發布次數：" + publishCount;
-                    }
-                }
-            );
-
-        }, 100);
-
-    } catch(error) {
-
-        alert("感測器啟動失敗：" + error.message);
-
+    } catch (error) {
+      console.error(error);
+      alert("無法啟動感測器：" + error.message);
     }
-}
+  }
 
-// ==============================
-// 停止感測器
-// ==============================
+  // 停止感測器
+  function stopSensor() {
+    if (!sensorRunning) return;
 
-function stopSensor() {
+    window.removeEventListener("devicemotion", handleMotion);
 
-    sensorActive = false;
+    clearInterval(publishTimer);
+    clearInterval(updateTimer);
 
-    window.removeEventListener(
-        "devicemotion",
-        handleMotion
-    );
+    sensorRunning = false;
 
-    if (publishTimer) {
-        clearInterval(publishTimer);
-        publishTimer = null;
+    document.getElementById("sensorStatus").textContent =
+      "感測器已停止";
+
+    document.getElementById("stepStatus").textContent =
+      "計步器已停止";
+  }
+
+  // 發布步數
+  function publishSteps(eventType) {
+    const data = {
+      steps: steps,
+      deviceId: deviceId,
+      timestamp: Date.now(),
+      eventType: eventType
+    };
+
+    if (client && client.connected) {
+      client.publish(stepsTopic, JSON.stringify(data));
     }
+  }
 
-    latestData = null;
+  // 步數歸零
+  function resetSteps() {
+    steps = 0;
 
-    document.getElementById("sensorStatus").innerText =
-        "感測器已停止";
-}
+    document.getElementById("stepsValue").textContent = 0;
+    document.getElementById("stepStatus").textContent = "步數已歸零";
 
+    magnitudeHistory = [];
+    previousMagnitude = null;
+    peakCandidate = null;
+    lastStepTime = 0;
+
+    publishSteps("reset");
+  }
+
+  // 調整靈敏度
+  function changeSensitivity(value) {
+    sensitivity = Number(value);
+    document.getElementById("sensitivityValue").textContent =
+      sensitivity.toFixed(2);
+  }
 </script>
-
 </body>
 </html>
