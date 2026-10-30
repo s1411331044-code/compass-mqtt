@@ -1,0 +1,250 @@
+
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>地震儀 MQTT 即時監控</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f1f4f8;
+      margin: 0;
+      padding: 20px;
+      text-align: center;
+    }
+    h2 { color: #243447; }
+    .panel {
+      background: white;
+      border-radius: 12px;
+      padding: 18px;
+      margin: 16px auto;
+      max-width: 950px;
+      box-shadow: 0 2px 8px #0001;
+    }
+    .values {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+    .value {
+      background: #edf3fa;
+      padding: 15px 5px;
+      border-radius: 8px;
+    }
+    .number {
+      font-size: 27px;
+      font-weight: bold;
+      margin-top: 8px;
+    }
+    canvas { max-width: 100%; }
+    .hint { color: #666; font-size: 13px; }
+    @media (max-width: 600px) {
+      .values { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <h2>地震儀 MQTT 即時監控系統</h2>
+
+  <div class="panel">
+    <h3>MQTT 連線狀態</h3>
+    <p id="mqttStatus">連線中...</p>
+    <p id="deviceStatus">等待手機資料</p>
+  </div>
+
+  <div class="panel">
+    <h3>即時三軸加速度（m/s²）</h3>
+    <div class="values">
+      <div class="value">X 軸<div class="number" id="xValue">0.00</div></div>
+      <div class="value">Y 軸<div class="number" id="yValue">0.00</div></div>
+      <div class="value">Z 軸<div class="number" id="zValue">0.00</div></div>
+      <div class="value">合成震動<div class="number" id="totalValue">0.00</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>地震波形即時監控</h3>
+    <canvas id="earthquakeChart"></canvas>
+    <p class="hint">顯示最近 100 筆資料</p>
+  </div>
+
+  <div class="panel">
+    <h3>震動統計</h3>
+    <p>目前震動強度</p>
+    <div class="number" id="currentLevel">0.00 m/s²</div>
+    <p>接收期間最大震動值</p>
+    <div class="number" id="peakValue">0.00 m/s²</div>
+  </div>
+
+  <div class="panel">
+    <h3>手機裝置資訊</h3>
+    <p>裝置 ID：<span id="deviceId">尚未收到</span></p>
+    <p>最後接收時間：<span id="lastTime">尚未收到</span></p>
+    <p>接收訊息數：<span id="messageCount">0</span></p>
+  </div>
+
+<script>
+  const broker = "wss://broker.hivemq.com:8884/mqtt";
+  const topic = "nutc/im/s1411331044/earthquake/data";
+
+  let messageCount = 0;
+  let peak = 0;
+
+  // 建立即時波形圖
+  const chart = new Chart(
+    document.getElementById("earthquakeChart"),
+    {
+      type: "line",
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: "X 軸",
+            data: [],
+            borderColor: "red",
+            borderWidth: 2,
+            pointRadius: 0
+          },
+          {
+            label: "Y 軸",
+            data: [],
+            borderColor: "green",
+            borderWidth: 2,
+            pointRadius: 0
+          },
+          {
+            label: "Z 軸",
+            data: [],
+            borderColor: "blue",
+            borderWidth: 2,
+            pointRadius: 0
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        animation: false,
+        interaction: {
+          intersect: false,
+          mode: "index"
+        },
+        scales: {
+          x: { display: false },
+          y: {
+            title: {
+              display: true,
+              text: "加速度（m/s²）"
+            }
+          }
+        }
+      }
+    }
+  );
+
+  function updateChart(x, y, z) {
+    chart.data.labels.push(new Date().toLocaleTimeString());
+
+    chart.data.datasets[0].data.push(x);
+    chart.data.datasets[1].data.push(y);
+    chart.data.datasets[2].data.push(z);
+
+    if (chart.data.labels.length > 100) {
+      chart.data.labels.shift();
+      chart.data.datasets.forEach(ds => ds.data.shift());
+    }
+
+    chart.update("none");
+  }
+
+  // MQTT 連線
+  const client = mqtt.connect(broker, {
+    clientId: "eq_pc_" + Math.random().toString(16).slice(2, 10),
+    clean: true,
+    connectTimeout: 10000,
+    reconnectPeriod: 3000
+  });
+
+  client.on("connect", () => {
+    document.getElementById("mqttStatus").textContent =
+      "MQTT 已連線";
+
+    client.subscribe(topic, (err) => {
+      if (err) {
+        document.getElementById("mqttStatus").textContent =
+          "Topic 訂閱失敗";
+      } else {
+        document.getElementById("mqttStatus").textContent =
+          "已訂閱地震儀資料，等待手機傳送";
+      }
+    });
+  });
+
+  client.on("reconnect", () => {
+    document.getElementById("mqttStatus").textContent =
+      "MQTT 重新連線中...";
+  });
+
+  client.on("error", (err) => {
+    console.error(err);
+    document.getElementById("mqttStatus").textContent =
+      "MQTT 連線錯誤";
+  });
+
+  // 接收手機資料
+  client.on("message", (receivedTopic, message) => {
+    if (receivedTopic !== topic) return;
+
+    try {
+      const data = JSON.parse(message.toString());
+
+      const x = Number(data.x) || 0;
+      const y = Number(data.y) || 0;
+      const z = Number(data.z) || 0;
+      const total = Math.sqrt(x*x + y*y + z*z);
+
+      document.getElementById("xValue").textContent =
+        x.toFixed(2);
+      document.getElementById("yValue").textContent =
+        y.toFixed(2);
+      document.getElementById("zValue").textContent =
+        z.toFixed(2);
+      document.getElementById("totalValue").textContent =
+        total.toFixed(2);
+
+      document.getElementById("currentLevel").textContent =
+        total.toFixed(2) + " m/s²";
+
+      if (total > peak) {
+        peak = total;
+        document.getElementById("peakValue").textContent =
+          peak.toFixed(2) + " m/s²";
+      }
+
+      updateChart(x, y, z);
+
+      messageCount++;
+
+      document.getElementById("messageCount").textContent =
+        messageCount;
+
+      document.getElementById("deviceId").textContent =
+        data.deviceId || "未知";
+
+      document.getElementById("lastTime").textContent =
+        data.timestamp
+          ? new Date(data.timestamp).toLocaleString()
+          : new Date().toLocaleString();
+
+      document.getElementById("deviceStatus").textContent =
+        "正在接收手機地震儀資料";
+
+    } catch (error) {
+      console.error("資料解析失敗：", error);
+    }
+  });
+</script>
+</body>
+</html>
