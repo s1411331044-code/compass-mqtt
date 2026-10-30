@@ -3,65 +3,77 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PC 三軸加速度監測系統</title>
 
 <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
 <style>
 body {
     font-family: Arial, sans-serif;
     background: #edf2f7;
     text-align: center;
-    padding: 30px;
+    padding: 20px;
 }
 .container {
-    max-width: 750px;
+    max-width: 1000px;
     margin: auto;
     background: white;
-    padding: 30px;
-    border-radius: 20px;
+    padding: 25px;
+    border-radius: 18px;
     box-shadow: 0 3px 15px #ccc;
 }
 h1 { color: #2563eb; }
+
 .status {
-    font-size: 20px;
-    margin: 20px;
     color: #d97706;
+    font-size: 18px;
+    font-weight: bold;
 }
+
 .grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 18px;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
 }
+
 .data {
     background: #eaf2ff;
-    padding: 25px 10px;
-    border-radius: 15px;
+    padding: 18px 8px;
+    border-radius: 12px;
 }
-.data h3 {
-    margin: 5px;
-    color: #334155;
-}
+
 .value {
-    font-size: 32px;
+    font-size: 27px;
     font-weight: bold;
-    color: #2563eb;
 }
+
+.unit {
+    color: #64748b;
+    font-size: 13px;
+}
+
 .total {
-    background: #dcfce7;
-    grid-column: span 2;
+    background: #f3e8ff;
 }
-.total .value {
-    color: #15803d;
-}
-.info {
+
+.chartBox {
     margin-top: 25px;
+    padding: 15px;
+    border: 1px solid #ddd;
+    border-radius: 12px;
+}
+
+.info {
+    margin-top: 20px;
     color: #64748b;
 }
-@media(max-width:500px) {
-    .grid { grid-template-columns: 1fr; }
-    .total { grid-column: span 1; }
+
+@media(max-width:650px) {
+    .grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
 }
 </style>
 </head>
@@ -72,60 +84,77 @@ h1 { color: #2563eb; }
 
 <h1>PC 三軸加速度監測系統</h1>
 
-<div class="status" id="status">
+<p class="status" id="status">
 MQTT 連線中...
-</div>
+</p>
 
 <div class="grid">
 
-<div class="data">
-<h3>X 軸加速度</h3>
-<div class="value" id="x">0.00</div>
-m/s²
+    <div class="data">
+        <h3>X 軸</h3>
+        <div class="value" id="x">0.00</div>
+        <div class="unit">m/s²</div>
+    </div>
+
+    <div class="data">
+        <h3>Y 軸</h3>
+        <div class="value" id="y">0.00</div>
+        <div class="unit">m/s²</div>
+    </div>
+
+    <div class="data">
+        <h3>Z 軸</h3>
+        <div class="value" id="z">0.00</div>
+        <div class="unit">m/s²</div>
+    </div>
+
+    <div class="data total">
+        <h3>合成加速度</h3>
+        <div class="value" id="total">0.00</div>
+        <div class="unit">m/s²</div>
+    </div>
+
 </div>
 
-<div class="data">
-<h3>Y 軸加速度</h3>
-<div class="value" id="y">0.00</div>
-m/s²
-</div>
+<div class="chartBox">
 
-<div class="data">
-<h3>Z 軸加速度</h3>
-<div class="value" id="z">0.00</div>
-m/s²
-</div>
+    <h3>即時四軸加速度折線圖</h3>
 
-<div class="data total">
-<h3>合成加速度</h3>
-<div class="value" id="total">0.00</div>
-m/s²
-</div>
+    <canvas id="accelChart"></canvas>
 
 </div>
 
 <div class="info">
-<p>MQTT Topic：</p>
-<p id="topic"></p>
-<p>最後接收時間：<span id="time">尚未接收</span></p>
-<p>接收封包數：<span id="count">0</span></p>
+
+    <p>MQTT Topic：</p>
+
+    <p>nutc/im/s1411331044/accelerometer/data</p>
+
+    <p>最後接收時間：
+        <span id="time">尚未接收</span>
+    </p>
+
+    <p>接收封包數：
+        <span id="count">0</span>
+    </p>
+
 </div>
 
 </div>
 
 <script>
 
+// ==============================
 // MQTT 設定
+// ==============================
+
 const broker = "wss://broker.hivemq.com:8884/mqtt";
 
 const topic = "nutc/im/s1411331044/accelerometer/data";
 
-document.getElementById("topic").innerText = topic;
-
-// 建立 MQTT 連線
 const client = mqtt.connect(broker, {
     clientId: "pc_accel_" +
-        Math.random().toString(16).substring(2, 10),
+        Math.random().toString(16).slice(2, 10),
     clean: true,
     connectTimeout: 10000,
     reconnectPeriod: 3000
@@ -133,27 +162,175 @@ const client = mqtt.connect(broker, {
 
 let count = 0;
 
+// ==============================
+// 建立同一張四線圖表
+// ==============================
+
+const chart = new Chart(
+    document.getElementById("accelChart"),
+    {
+        type: "line",
+
+        data: {
+            labels: [],
+
+            datasets: [
+                {
+                    label: "X 軸",
+                    data: [],
+                    borderColor: "#ef4444",
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.2
+                },
+                {
+                    label: "Y 軸",
+                    data: [],
+                    borderColor: "#16a34a",
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.2
+                },
+                {
+                    label: "Z 軸",
+                    data: [],
+                    borderColor: "#3b82f6",
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.2
+                },
+                {
+                    label: "合成加速度",
+                    data: [],
+                    borderColor: "#a855f7",
+                    borderWidth: 3,
+                    pointRadius: 0,
+                    tension: 0.2
+                }
+            ]
+        },
+
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            animation: false,
+
+            interaction: {
+                intersect: false,
+                mode: "index"
+            },
+
+            plugins: {
+                legend: {
+                    display: true,
+                    position: "bottom"
+                }
+            },
+
+            scales: {
+                x: {
+                    title: {
+                        display: true,
+                        text: "時間"
+                    }
+                },
+
+                y: {
+                    title: {
+                        display: true,
+                        text: "加速度 (m/s²)"
+                    }
+                }
+            }
+        }
+    }
+);
+
+// ==============================
+// 更新折線圖
+// ==============================
+
+function updateChart(x, y, z, total) {
+
+    const now = new Date().toLocaleTimeString();
+
+    chart.data.labels.push(now);
+
+    chart.data.datasets[0].data.push(x);
+    chart.data.datasets[1].data.push(y);
+    chart.data.datasets[2].data.push(z);
+    chart.data.datasets[3].data.push(total);
+
+    // 只保留最近50筆資料
+    if (chart.data.labels.length > 50) {
+
+        chart.data.labels.shift();
+
+        chart.data.datasets.forEach(function(dataset) {
+            dataset.data.shift();
+        });
+
+    }
+
+    chart.update("none");
+}
+
+// ==============================
 // MQTT 連線成功
+// ==============================
+
 client.on("connect", function() {
 
     document.getElementById("status").innerText =
-        "MQTT 已連線，等待手機資料...";
+        "MQTT 已連線，正在訂閱資料...";
 
     client.subscribe(topic, function(error) {
 
         if (error) {
+
             document.getElementById("status").innerText =
                 "訂閱失敗";
+
         } else {
+
             document.getElementById("status").innerText =
-                "已訂閱，等待手機傳送資料";
+                "已訂閱，等待手機資料";
+
         }
 
     });
 
 });
 
-// 接收 MQTT 資料
+// ==============================
+// MQTT 重新連線
+// ==============================
+
+client.on("reconnect", function() {
+
+    document.getElementById("status").innerText =
+        "MQTT 重新連線中...";
+
+});
+
+client.on("close", function() {
+
+    document.getElementById("status").innerText =
+        "MQTT 已斷線";
+
+});
+
+client.on("error", function(error) {
+
+    document.getElementById("status").innerText =
+        "MQTT 錯誤：" + error.message;
+
+});
+
+// ==============================
+// 接收手機資料
+// ==============================
+
 client.on("message", function(receivedTopic, message) {
 
     if (receivedTopic !== topic) return;
@@ -166,13 +343,16 @@ client.on("message", function(receivedTopic, message) {
         const y = Number(data.y);
         const z = Number(data.z);
 
-        if (![x, y, z].every(Number.isFinite)) return;
+        if (![x, y, z].every(Number.isFinite)) {
+            return;
+        }
 
         // 計算合成加速度
         const total = Math.sqrt(
             x*x + y*y + z*z
         );
 
+        // 更新數值
         document.getElementById("x").innerText =
             x.toFixed(2);
 
@@ -185,7 +365,10 @@ client.on("message", function(receivedTopic, message) {
         document.getElementById("total").innerText =
             total.toFixed(2);
 
-        // 更新時間
+        // 更新同一張四線圖表
+        updateChart(x, y, z, total);
+
+        // 更新接收時間
         document.getElementById("time").innerText =
             new Date().toLocaleTimeString();
 
@@ -203,22 +386,6 @@ client.on("message", function(receivedTopic, message) {
 
     }
 
-});
-
-// MQTT 事件
-client.on("reconnect", function() {
-    document.getElementById("status").innerText =
-        "MQTT 重新連線中...";
-});
-
-client.on("error", function(error) {
-    document.getElementById("status").innerText =
-        "MQTT 錯誤：" + error.message;
-});
-
-client.on("close", function() {
-    document.getElementById("status").innerText =
-        "MQTT 已斷線";
 });
 
 </script>
