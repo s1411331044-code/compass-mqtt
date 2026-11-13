@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PC 人臉辨識即時監控</title>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+:root{color-scheme:dark;--bg:#101827;--panel:#1b293b;--line:#30445d;--text:#edf4ff;--muted:#a9bad0;--blue:#60a5fa;--green:#22c55e;--red:#ef4444}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(160deg,#0d1726,#17283d);color:var(--text);font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;min-height:100vh}
+main{max-width:1100px;margin:auto;padding:22px 16px 40px}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+h1{font-size:26px;margin:0}h2{font-size:17px;margin:0 0 12px}
+.conn{display:flex;align-items:center;gap:8px;background:#101c2c;border:1px solid var(--line);padding:8px 14px;border-radius:999px;font-size:13px;color:#c8d8eb}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--red)}.dot.ok{background:var(--green)}.dot.wait{background:#eab308}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}
+.stat{background:rgba(27,41,59,.96);border:1px solid var(--line);border-radius:14px;padding:14px}
+.stat b{display:block;font-size:28px;font-variant-numeric:tabular-nums}.stat span{font-size:12px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:1fr 1.4fr;gap:14px}@media(max-width:800px){.grid{grid-template-columns:1fr}}
+.panel{background:rgba(27,41,59,.96);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 8px 25px #0002}
+table{width:100%;border-collapse:collapse;font-size:14px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-weight:600;font-size:12px}
+.scroll{max-height:460px;overflow:auto}
+.tag{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700}
+.tag.k{background:#14532d;color:#bbf7d0}.tag.u{background:#7f1d1d;color:#fecaca}
+.empty{color:var(--muted);font-size:13px;padding:10px 0}
+button{border:0;border-radius:10px;padding:9px 14px;font-size:14px;font-weight:650;cursor:pointer;background:#344a64;color:#fff}
+.flash{animation:fl 1.2s}@keyframes fl{from{background:#1d4ed855}to{background:transparent}}
+.small{font-size:12px;color:var(--muted);line-height:1.6;margin-top:14px}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>🖥️ 人臉辨識即時監控</h1>
+  <div class="conn"><span id="dot" class="dot wait"></span><span id="connText">連線中…</span></div>
+</header>
+
+<div class="stats">
+  <div class="stat"><b id="sTotal">0</b><span>收到事件總數</span></div>
+  <div class="stat"><b id="sPeople">0</b><span>辨識到的人員數</span></div>
+  <div class="stat"><b id="sStranger">0</b><span>陌生人事件數</span></div>
+  <div class="stat"><b id="sDevices">0</b><span>裝置數</span></div>
+  <div class="stat"><b id="sLast">—</b><span>最後事件時間</span></div>
+</div>
+
+<div class="grid">
+  <section class="panel">
+    <h2>辨識人員名單（最新狀態）</h2>
+    <div class="scroll">
+      <table><thead><tr><th>姓名</th><th>最後時間</th><th>距離</th><th>次數</th></tr></thead><tbody id="peopleBody"></tbody></table>
+      <div id="peopleEmpty" class="empty">等待資料中…</div>
+    </div>
+  </section>
+  <section class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h2 style="margin:0">即時紀錄</h2>
+      <div><button id="csvBtn">匯出 CSV</button> <button id="clearBtn">清除畫面</button></div>
+    </div>
+    <div class="scroll">
+      <table><thead><tr><th>時間</th><th>姓名</th><th>距離</th><th>裝置</th></tr></thead><tbody id="logBody"></tbody></table>
+      <div id="logEmpty" class="empty">等待資料中…</div>
+    </div>
+  </section>
+</div>
+
+<p class="small">Broker：broker.hivemq.com（wss://broker.hivemq.com:8884/mqtt）｜Topic：<span id="topic"></span><br>
+這是公開 broker，任何知道 topic 的人都能發布或讀取，所以收到的資料不一定可信；畫面只顯示文字內容，且紀錄只保存在此頁面記憶體，關閉網頁即消失。</p>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const BROKER_URL = "wss://broker.hivemq.com:8884/mqtt";
+  const TOPIC = "nutc/im/s1411331044/face/recognition";
+  const MAX_LOG = 200;
+  const $ = id => document.getElementById(id);
+  $("topic").textContent = TOPIC;
+
+  const people = new Map();   // name -> {time,distance,count,device}
+  const devices = new Set();
+  const logs = [];
+  let total = 0, strangers = 0;
+
+  function setConn(cls, msg){ $("dot").className = "dot " + cls; $("connText").textContent = msg; }
+  const clip = (v, n) => String(v ?? "").slice(0, n);
+
+  function cell(tr, text, cls){
+    const td = document.createElement("td"); td.textContent = text; if(cls) td.className = cls; tr.append(td); return td;
+  }
+
+  function renderPeople(){
+    const body = $("peopleBody"); body.replaceChildren();
+    const rows = [...people.entries()].sort((a,b) => b[1].ts - a[1].ts);
+    rows.forEach(([name, p], i) => {
+      const tr = document.createElement("tr"); if(i === 0 && p.fresh) tr.className = "flash";
+      const td = document.createElement("td");
+      const tag = document.createElement("span"); tag.className = "tag " + (p.known ? "k" : "u"); tag.textContent = name;
+      td.append(tag); tr.append(td);
+      cell(tr, p.time); cell(tr, p.distance.toFixed(3)); cell(tr, String(p.count));
+      body.append(tr);
+    });
+    $("peopleEmpty").style.display = rows.length ? "none" : "block";
+    $("sPeople").textContent = [...people.values()].filter(p => p.known).length;
+  }
+
+  function renderLogs(){
+    const body = $("logBody"); body.replaceChildren();
+    logs.forEach((l, i) => {
+      const tr = document.createElement("tr"); if(i === 0) tr.className = "flash";
+      cell(tr, l.time); const nt = cell(tr, l.name); nt.style.color = l.known ? "#86efac" : "#fca5a5"; nt.style.fontWeight = "700"; cell(tr, l.distance.toFixed(3)); cell(tr, l.device);
+      body.append(tr);
+    });
+    $("logEmpty").style.display = logs.length ? "none" : "block";
+  }
+
+  function handle(raw){
+    let d;
+    try { d = JSON.parse(raw); } catch(e){ return; }
+    if(!d || typeof d !== "object" || typeof d.name !== "string") return;
+    const name = clip(d.name, 40);
+    const device = clip(d.device_id, 40) || "unknown";
+    const dist = Number(d.distance); const distance = Number.isFinite(dist) ? dist : 0;
+    const time = clip(d.time, 30) || new Date().toLocaleString();
+    const known = d.known !== false && name !== "陌生人";
+    total++; devices.add(device); if(!known) strangers++;
+    const prev = people.get(name);
+    people.set(name, {time, distance, device, known, count: (prev ? prev.count : 0) + 1, ts: Date.now(), fresh: true});
+    logs.unshift({time, name, distance, device, known});
+    if(logs.length > MAX_LOG) logs.pop();
+    $("sTotal").textContent = total; $("sStranger").textContent = strangers;
+    $("sDevices").textContent = devices.size;
+    $("sLast").textContent = time.slice(-8);
+    renderPeople(); renderLogs();
+  }
+
+  const client = mqtt.connect(BROKER_URL, {clientId: "monitor-" + Math.random().toString(16).slice(2,10), clean: true, reconnectPeriod: 3000, connectTimeout: 10000});
+  client.on("connect", () => {
+    setConn("ok", "已連線，訂閱中");
+    client.subscribe(TOPIC, {qos: 0}, err => setConn(err ? "" : "ok", err ? "訂閱失敗：" + err.message : "已連線並訂閱 topic"));
+  });
+  client.on("reconnect", () => setConn("wait", "重新連線中…"));
+  client.on("close", () => setConn("", "連線中斷，自動重試中…"));
+  client.on("error", e => setConn("", "錯誤：" + e.message));
+  client.on("message", (topic, payload) => handle(payload.toString()));
+
+  $("clearBtn").addEventListener("click", () => {
+    people.clear(); devices.clear(); logs.length = 0; total = 0; strangers = 0; $("sStranger").textContent = "0";
+    $("sTotal").textContent = "0"; $("sDevices").textContent = "0"; $("sLast").textContent = "—";
+    renderPeople(); renderLogs();
+  });
+
+  $("csvBtn").addEventListener("click", () => {
+    if(!logs.length){ alert("目前沒有紀錄。"); return; }
+    const esc = v => { let s = String(v); if(/^[=+\-@]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; };
+    const csv = "時間,姓名,特徵距離,裝置ID\n" + logs.slice().reverse().map(l => [l.time, l.name, l.distance, l.device].map(esc).join(",")).join("\n");
+    const url = URL.createObjectURL(new Blob(["\ufeff" + csv], {type: "text/csv;charset=utf-8"}));
+    const a = document.createElement("a"); a.href = url; a.download = "face-log.csv"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  renderPeople(); renderLogs();
+})();
+</script>
+</body>
+</html>
