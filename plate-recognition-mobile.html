@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>手機車牌辨識（模型＋照片＋MQTT）</title>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<style>
+:root{color-scheme:light dark;--bg:#f4f6f8;--fg:#1c2230;--card:#fff;--bd:#d6dbe3;--ac:#1a7f4b;--mut:#64708a;--code:#eef1f5}
+@media(prefers-color-scheme:dark){:root{--bg:#13161c;--fg:#e7eaf0;--card:#1c2129;--bd:#343b48;--ac:#4cc88a;--mut:#9aa5b8;--code:#12151a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,"Noto Sans TC",system-ui,sans-serif}
+main{max-width:640px;margin:0 auto;padding:12px}
+h1{font-size:19px;margin:4px 0 10px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px;margin-bottom:10px}
+h2{font-size:14px;margin:0 0 8px;color:var(--mut)}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0}
+button{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:8px 14px;font:inherit}
+button.alt{background:transparent;color:var(--fg);border:1px solid var(--bd)}
+input,select{background:var(--code);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px 8px;font:inherit;max-width:100%}
+.dot{width:10px;height:10px;border-radius:50%;background:#e5484d;display:inline-block}.dot.on{background:#22c55e}
+canvas,video{width:100%;border-radius:8px;background:#222;display:block}
+#crop{width:240px;margin-top:8px}
+.big{font:700 30px/1.2 ui-monospace,Menlo,monospace;letter-spacing:2px}
+pre{background:var(--code);border-radius:8px;padding:8px;margin:0;max-height:200px;overflow:auto;font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap}
+small{color:var(--mut)}
+#thumbs{display:flex;flex-wrap:wrap;gap:8px}
+.th{width:84px;font-size:11px;text-align:center;cursor:pointer;border:2px solid transparent;border-radius:8px;padding:2px}
+.th.sel{border-color:var(--ac)}.th img{width:100%;height:60px;object-fit:cover;border-radius:6px;display:block}
+</style>
+</head>
+<body>
+<main>
+<h1>手機車牌辨識 → MQTT</h1>
+
+<div class="card"><h2>① MQTT 連線</h2>
+  <div><span class="dot" id="dot"></span> <span id="mst">連線中…</span></div>
+  <div class="row">裝置 ID <input id="dev" size="12"></div>
+  <div class="row">Topic <input id="topic" size="34" value="nutc/im/s1411331044/plate/recognition"></div>
+  <div class="row">同車牌重複發布間隔 <input id="gap" type="number" min="5" value="60" style="width:70px"> 秒</div>
+</div>
+
+<div class="card"><h2>② 載入 AI 模型</h2>
+  <div class="row"><button id="bOcr">載入 OCR（Tesseract）</button><small id="ocrSt">未載入</small></div>
+  <div class="row">匯入偵測模型 <input type="file" id="fModel" accept=".onnx"></div>
+  <small id="modSt">尚未匯入。需為 YOLOv8 / YOLO11 單類別（車牌）ONNX，匯入後會存在本機，下次不必重匯。</small>
+  <div class="row">偵測方式
+    <select id="det"><option value="onnx">ONNX 模型</option><option value="heur">傳統偵測（無模型，僅示範）</option></select>
+    輸入尺寸 <input id="isz" type="number" value="640" style="width:70px">
+    信心門檻 <input id="cthr" type="number" step="0.05" value="0.4" style="width:70px">
+  </div>
+  <div class="row"><button class="alt" id="bClr">清除已存模型</button></div>
+</div>
+
+<div class="card"><h2>③ 照片範例</h2>
+  <div class="row"><input type="file" id="fPhoto" accept="image/*" multiple></div>
+  <div id="thumbs"></div>
+  <div class="row"><button id="bOne">辨識選取照片</button><button class="alt" id="bAll">全部辨識</button>
+    <label><input type="checkbox" id="pub" checked> 辨識後發布到 MQTT</label></div>
+</div>
+
+<div class="card"><h2>④ 即時相機（需 HTTPS）</h2>
+  <div class="row"><button id="go">啟動相機</button><button class="alt" id="stop">停止</button></div>
+  <video id="vid" playsinline muted style="display:none"></video>
+</div>
+
+<div class="card"><h2>⑤ 偵測結果</h2>
+  <canvas id="cv" width="640" height="360"></canvas>
+  <canvas id="crop" width="480" height="240"></canvas>
+  <div class="big" id="cur">—</div><small id="curInfo"></small>
+  <h2 style="margin-top:10px">紀錄</h2><pre id="log"></pre>
+</div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const BROKER = "wss://broker.hivemq.com:8884/mqtt";
+const log = m => { const el = $("log"); el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; };
+ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
+ort.env.wasm.numThreads = 1;
+
+/* ---------- 裝置 ID / MQTT ---------- */
+$("dev").value = localStorage.plateDev || (localStorage.plateDev = "phone-" + Math.random().toString(36).slice(2, 7));
+$("dev").onchange = () => localStorage.plateDev = $("dev").value.trim() || "phone";
+const client = mqtt.connect(BROKER, {clientId: "plate_" + Math.random().toString(16).slice(2, 10), reconnectPeriod: 3000, connectTimeout: 8000});
+const setSt = (on, t) => { $("dot").className = "dot" + (on ? " on" : ""); $("mst").textContent = t || (on ? "已連線 broker.hivemq.com" : "未連線"); };
+client.on("connect", () => setSt(true));
+client.on("reconnect", () => setSt(false, "重連中…"));
+client.on("close", () => setSt(false));
+client.on("error", e => setSt(false, "錯誤：" + e.message));
+
+/* ---------- 台灣車牌校正 ---------- */
+const LET = "ABCDEFGHJKLMNPQRSTUVWXYZ", DIG = "0123456789";   // 假設不使用 I、O，請依監理規定確認
+const FORMATS = [
+  {name: "新式汽車", layout: "LLLDDDD", dash: 3, re: /^[A-HJ-NP-Z]{3}-\d{4}$/},
+  {name: "舊式1234-AB", layout: "DDDDLL", dash: 4, re: /^\d{4}-[A-HJ-NP-Z]{2}$/},
+  {name: "舊式AB-1234", layout: "LLDDDD", dash: 2, re: /^[A-HJ-NP-Z]{2}-\d{4}$/},
+  {name: "機車", layout: "LLLDDD", dash: 3, re: /^[A-HJ-NP-Z]{3}-\d{3}$/},
+];
+const TO_D = {O:"0",D:"0",Q:"0",I:"1",L:"1",Z:"2",S:"5",G:"6",B:"8",T:"7"};
+const TO_L = {"0":"D","1":"L","2":"Z","5":"S","6":"G","8":"B",O:"D",I:"L"};
+function fixPlate(raw) {
+  const s = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, ""), c = [];
+  for (const f of FORMATS) {
+    if (f.layout.length !== s.length) continue;
+    let out = "", cost = 0, ok = true;
+    for (let i = 0; i < s.length && ok; i++) {
+      const ch = s[i], isD = f.layout[i] === "D", set = isD ? DIG : LET, map = isD ? TO_D : TO_L;
+      if (set.includes(ch)) out += ch; else if (map[ch]) { out += map[ch]; cost++; } else ok = false;
+    }
+    if (!ok) continue;
+    const text = out.slice(0, f.dash) + "-" + out.slice(f.dash);
+    if (f.re.test(text)) c.push({text, format: f.name, cost});
+  }
+  return c.sort((a, b) => a.cost - b.cost)[0] || null;
+}
+
+/* ---------- 來源（照片 / 相機）與畫布 ---------- */
+const cv = $("cv"), cx = cv.getContext("2d"), vid = $("vid"), crop = $("crop"), cc = crop.getContext("2d");
+let cw = 640, ch = 360, source = null;                      // source: {el, w, h}
+function setSource(el, w, h) {
+  cw = 640; ch = Math.round(640 * h / w); cv.width = cw; cv.height = ch; source = {el, w, h};
+}
+
+/* ---------- 模型：匯入 ONNX 並存入 IndexedDB ---------- */
+const idb = () => new Promise((res, rej) => { const r = indexedDB.open("plateModel", 1); r.onupgradeneeded = () => r.result.createObjectStore("m"); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+const idbSet = async (k, v) => { const d = await idb(); return new Promise((res, rej) => { const t = d.transaction("m", "readwrite"); t.objectStore("m").put(v, k); t.oncomplete = res; t.onerror = () => rej(t.error); }); };
+const idbGet = async k => { const d = await idb(); return new Promise((res, rej) => { const q = d.transaction("m").objectStore("m").get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); };
+
+let session = null;
+async function openModel(buf, name) {
+  $("modSt").textContent = "載入模型中…";
+  try {
+    session = await ort.InferenceSession.create(buf, {executionProviders: ["wasm"]});
+    $("modSt").textContent = `已載入：${name}（輸入 ${session.inputNames[0]}，輸出 ${session.outputNames[0]}）`;
+  } catch (e) { session = null; $("modSt").textContent = "模型載入失敗：" + e.message; }
+}
+$("fModel").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const buf = await f.arrayBuffer();
+  await openModel(buf, f.name);
+  if (session) { await idbSet("detector", {buf, name: f.name}); log("模型已存入本機：" + f.name); }
+};
+$("bClr").onclick = async () => { await idbSet("detector", null); session = null; $("modSt").textContent = "已清除已存模型"; };
+idbGet("detector").then(s => s && openModel(s.buf, s.name)).catch(() => {});
+
+/* ---------- OCR：Tesseract.js ---------- */
+let worker = null;
+$("bOcr").onclick = async () => {
+  if (worker) return; $("ocrSt").textContent = "載入中…（首次需網路）";
+  try {
+    worker = await Tesseract.createWorker("eng");
+    await worker.setParameters({tessedit_char_whitelist: "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789-", tessedit_pageseg_mode: "7"});
+    $("ocrSt").textContent = "已載入";
+  } catch (e) { worker = null; $("ocrSt").textContent = "失敗：" + e.message; }
+};
+async function ocr(b) {
+  const k = source.w / cw;                                   // 從原始高解析來源裁切
+  cc.filter = "grayscale(1) contrast(1.5)";
+  cc.drawImage(source.el, b.x * k, b.y * k, b.w * k, b.h * k, 0, 0, 480, 240);
+  const r = await worker.recognize(crop);
+  return {raw: r.data.text.trim(), conf: r.data.confidence / 100};
+}
+
+/* ---------- 偵測 A：YOLO ONNX ---------- */
+const lb = document.createElement("canvas");
+function nms(bs, iou = .45) {
+  bs.sort((a, b) => b.conf - a.conf); const keep = [];
+  for (const b of bs) {
+    if (keep.every(k => {
+      const w = Math.min(b.x + b.w, k.x + k.w) - Math.max(b.x, k.x), h = Math.min(b.y + b.h, k.y + k.h) - Math.max(b.y, k.y);
+      const i = Math.max(0, w) * Math.max(0, h); return i / (b.w * b.h + k.w * k.h - i) < iou;
+    })) keep.push(b);
+  }
+  return keep;
+}
+async function detectOnnx() {
+  if (!session) throw new Error("尚未匯入 ONNX 模型");
+  const {el, w, h} = source, S = +$("isz").value || 640, sc = Math.min(S / w, S / h);
+  const nw = Math.round(w * sc), nh = Math.round(h * sc), px = (S - nw) >> 1, py = (S - nh) >> 1;
+  lb.width = lb.height = S; const c = lb.getContext("2d");
+  c.fillStyle = "#727272"; c.fillRect(0, 0, S, S); c.drawImage(el, px, py, nw, nh);
+  const d = c.getImageData(0, 0, S, S).data, n = S * S, f = new Float32Array(3 * n);
+  for (let i = 0; i < n; i++) { f[i] = d[i * 4] / 255; f[n + i] = d[i * 4 + 1] / 255; f[2 * n + i] = d[i * 4 + 2] / 255; }
+  const out = await session.run({[session.inputNames[0]]: new ort.Tensor("float32", f, [1, 3, S, S])});
+  const o = out[session.outputNames[0]], dm = o.dims, a = o.data;
+  const cf = dm[1] < dm[2], N = cf ? dm[2] : dm[1], C = cf ? dm[1] : dm[2];   // YOLOv8：[1,4+類別數,N]
+  const g = (i, k) => cf ? a[k * N + i] : a[i * C + k], thr = +$("cthr").value || .4, z = cw / w, bs = [];
+  for (let i = 0; i < N; i++) {
+    let s = 0; for (let k = 4; k < C; k++) s = Math.max(s, g(i, k));
+    if (s < thr) continue;
+    const bw = g(i, 2), bh = g(i, 3);
+    bs.push({x: (g(i, 0) - bw / 2 - px) / sc * z, y: (g(i, 1) - bh / 2 - py) / sc * z, w: bw / sc * z, h: bh / sc * z, conf: s});
+  }
+  return nms(bs);
+}
+
+/* ---------- 偵測 B：傳統影像（白底、長寬比約 2:1 的亮色區塊，僅示範） ---------- */
+function detectHeur() {
+  const sw = 320, sh = Math.round(ch * sw / cw), t = document.createElement("canvas"); t.width = sw; t.height = sh;
+  const c = t.getContext("2d"); c.drawImage(source.el, 0, 0, sw, sh);
+  const d = c.getImageData(0, 0, sw, sh).data, m = new Uint8Array(sw * sh), seen = new Uint8Array(sw * sh), res = [];
+  for (let i = 0; i < sw * sh; i++) {
+    const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2], mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    m[i] = mx > 140 && (mx - mn) / mx < .3 ? 1 : 0;
+  }
+  for (let s0 = 0; s0 < sw * sh; s0++) {
+    if (!m[s0] || seen[s0]) continue;
+    const st = [s0]; seen[s0] = 1; let x0 = sw, x1 = 0, y0 = sh, y1 = 0, n = 0;
+    while (st.length) {
+      const p = st.pop(), x = p % sw, y = (p / sw) | 0; n++;
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+      for (const q of [x > 0 ? p - 1 : -1, x < sw - 1 ? p + 1 : -1, y > 0 ? p - sw : -1, y < sh - 1 ? p + sw : -1])
+        if (q >= 0 && m[q] && !seen[q]) { seen[q] = 1; st.push(q); }
+    }
+    const bw = x1 - x0 + 1, bh = y1 - y0 + 1, ratio = bw / bh, fill = n / (bw * bh);
+    if (bw > sw * .08 && ratio > 1.7 && ratio < 3.2 && fill > .45) {
+      const z = cw / sw; res.push({x: x0 * z, y: y0 * z, w: bw * z, h: bh * z, conf: Math.min(.95, .6 + (fill - .45) * .6)});
+    }
+  }
+  return res;
+}
+
+/* ---------- 挑最大（排除低信心與貼邊） ---------- */
+function pickLargest(dets, m = 4) {
+  const thr = +$("cthr").value || .4; let best = null, ba = 0;
+  for (const d of dets) {
+    if (d.conf < thr || d.x < m || d.y < m || d.x + d.w > cw - m || d.y + d.h > ch - m) continue;
+    if (d.w * d.h > ba) { ba = d.w * d.h; best = d; }
+  }
+  return best;
+}
+
+/* ---------- 單幀流程：偵測 → 挑最大 → OCR → 校正 ---------- */
+async function runFrame() {
+  cx.drawImage(source.el, 0, 0, cw, ch);
+  let dets = [];
+  try { dets = $("det").value === "onnx" ? await detectOnnx() : detectHeur(); } catch (e) { log("偵測錯誤：" + e.message); return null; }
+  const best = pickLargest(dets);
+  cx.font = "13px ui-monospace,monospace";
+  dets.forEach(d => {
+    cx.strokeStyle = d === best ? "#22c55e" : "#facc15"; cx.lineWidth = 3; cx.strokeRect(d.x, d.y, d.w, d.h);
+    cx.fillStyle = cx.strokeStyle; cx.fillText(d.conf.toFixed(2), d.x, Math.max(12, d.y - 4));
+  });
+  if (!best) { $("cur").textContent = "—"; $("curInfo").textContent = `偵測到 ${dets.length} 個框，無可用車牌`; return null; }
+  if (!worker) { log("請先按「載入 OCR」"); return null; }
+  const o = await ocr(best), fx = fixPlate(o.raw);
+  $("curInfo").textContent = "原始 OCR：" + (o.raw || "（空）");
+  $("cur").textContent = fx ? fx.text : "辨識失敗";
+  return fx ? {t: fx.text, f: fx.format, c: o.conf} : null;
+}
+
+/* ---------- 去重發布（離開 3 秒再出現立即發布；停留則依間隔） ---------- */
+const seen = new Map();
+function publishDedup(plate, format, conf, force) {
+  const now = Date.now(), rec = seen.get(plate);
+  const away = !rec || now - rec.lastSeen > 3000, due = rec && now - rec.lastPub >= (+$("gap").value || 60) * 1000;
+  if (rec) rec.lastSeen = now;
+  if (!(force || away || due)) return;
+  seen.set(plate, {lastSeen: now, lastPub: now});
+  const d = new Date(now), p = n => String(n).padStart(2, "0");
+  const payload = {
+    device_id: $("dev").value.trim(), plate, format, confidence: +conf.toFixed(3),
+    time: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`,
+    timestamp: d.toISOString(),
+  };
+  if (!client.connected) { log("未連線，略過：" + plate); return; }
+  client.publish($("topic").value.trim(), JSON.stringify(payload), {qos: 0});
+  log(`已發布 ${plate}（${payload.time}）`);
+}
+
+/* ---------- 照片範例 ---------- */
+const photos = []; let selIdx = -1;
+$("fPhoto").onchange = e => {
+  for (const f of e.target.files) {
+    const img = new Image(), url = URL.createObjectURL(f), idx = photos.length;
+    const box = document.createElement("div"), cap = document.createElement("span");
+    box.className = "th"; img.src = url; cap.textContent = f.name.slice(0, 12);
+    box.append(img, cap); box.onclick = () => select(idx);
+    $("thumbs").append(box); photos.push({img, box, cap});
+  }
+  if (selIdx < 0 && photos.length) select(0);
+};
+function select(i) {
+  selIdx = i; photos.forEach((p, k) => p.box.classList.toggle("sel", k === i));
+  const im = photos[i].img;
+  const show = () => { setSource(im, im.naturalWidth, im.naturalHeight); cx.drawImage(im, 0, 0, cw, ch); };
+  im.complete ? show() : im.onload = show;
+}
+async function runPhoto(i) {
+  select(i);
+  const im = photos[i].img; if (!im.complete) await im.decode();
+  setSource(im, im.naturalWidth, im.naturalHeight);
+  const r = await runFrame();
+  photos[i].cap.textContent = r ? r.t : "無結果";
+  log(`照片 ${i + 1}：${r ? r.t + "（" + r.f + "）" : "無結果"}`);
+  if (r && $("pub").checked) publishDedup(r.t, r.f, r.c, true);
+}
+$("bOne").onclick = () => selIdx >= 0 ? runPhoto(selIdx) : log("請先選擇照片");
+$("bAll").onclick = async () => { for (let i = 0; i < photos.length; i++) await runPhoto(i); };
+
+/* ---------- 即時相機：6 幀視窗中同一結果出現 3 次才算穩定 ---------- */
+let timer = null, stream = null, win = [], busy = false;
+async function camTick() {
+  if (busy || !vid.videoWidth) return; busy = true;
+  try {
+    setSource(vid, vid.videoWidth, vid.videoHeight);
+    win.push(await runFrame()); if (win.length > 6) win.shift();
+    const cnt = {}; win.forEach(r => r && (cnt[r.t] = (cnt[r.t] || 0) + 1));
+    const top = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+    if (top && cnt[top] >= 3) {
+      const rs = win.filter(r => r && r.t === top);
+      publishDedup(top, rs[0].f, rs.reduce((s, r) => s + r.c, 0) / rs.length);
+    }
+  } finally { busy = false; }
+}
+$("go").onclick = async () => {
+  $("stop").click(); win = []; seen.clear();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "environment", width: {ideal: 1280}}, audio: false});
+    vid.srcObject = stream; await vid.play(); timer = setInterval(camTick, 600);
+  } catch (e) { log("相機啟動失敗：" + e.message + "（需 HTTPS 與相機權限）"); }
+};
+$("stop").onclick = () => { clearInterval(timer); timer = null; if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } };
+</script>
+</body>
+</html>
