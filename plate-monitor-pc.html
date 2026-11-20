@@ -1,107 +1,165 @@
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
-<meta charset="utf-8">
+<meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>車牌辨識即時監控（PC）</title>
+<title>PC 車牌辨識即時監控</title>
 <script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <style>
-:root{color-scheme:light dark;--bg:#f4f6f8;--fg:#1c2230;--card:#fff;--bd:#d6dbe3;--ac:#1a7f4b;--mut:#64708a;--code:#eef1f5}
-@media(prefers-color-scheme:dark){:root{--bg:#13161c;--fg:#e7eaf0;--card:#1c2129;--bd:#343b48;--ac:#4cc88a;--mut:#9aa5b8;--code:#12151a}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,"Noto Sans TC",system-ui,sans-serif}
-main{max-width:1000px;margin:0 auto;padding:16px}
-header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}
-h1{font-size:20px;margin:0}
-.dot{width:10px;height:10px;border-radius:50%;background:#e5484d;display:inline-block}.dot.on{background:#22c55e}
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
-@media(max-width:640px){.stats{grid-template-columns:1fr 1fr}.two{grid-template-columns:1fr!important}}
-.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px}
-.card b{display:block;font-size:24px}.card span{color:var(--mut);font-size:12px}
-.two{display:grid;grid-template-columns:1fr 1.4fr;gap:12px}
-h2{font-size:14px;color:var(--mut);margin:0 0 8px}
-ul{list-style:none;margin:0;padding:0;max-height:420px;overflow:auto}
-li{padding:6px 0;border-bottom:1px solid var(--bd);font-size:13px}
-li .p{font:700 16px ui-monospace,Menlo,monospace;color:var(--ac)}
-li small{color:var(--mut)}
-button{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:6px 12px;font:inherit}
-button.alt{background:transparent;color:var(--fg);border:1px solid var(--bd)}
-input{background:var(--code);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px 8px;font:inherit;width:280px;max-width:100%}
+:root{color-scheme:dark;--bg:#101827;--panel:#1b293b;--line:#30445d;--text:#edf4ff;--muted:#a9bad0;--blue:#60a5fa;--green:#22c55e;--red:#ef4444}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(160deg,#0d1726,#17283d);color:var(--text);font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;min-height:100vh}
+main{max-width:1100px;margin:auto;padding:22px 16px 40px}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+h1{font-size:26px;margin:0}h2{font-size:17px;margin:0 0 12px}
+.conn{display:flex;align-items:center;gap:8px;background:#101c2c;border:1px solid var(--line);padding:8px 14px;border-radius:999px;font-size:13px;color:#c8d8eb}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--red)}.dot.ok{background:var(--green)}.dot.wait{background:#eab308}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:14px}
+.stat{background:rgba(27,41,59,.96);border:1px solid var(--line);border-radius:14px;padding:14px}
+.stat b{display:block;font-size:28px;font-variant-numeric:tabular-nums}.stat span{font-size:12px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:1fr 1.4fr;gap:14px}@media(max-width:800px){.grid{grid-template-columns:1fr}}
+.panel{background:rgba(27,41,59,.96);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 8px 25px #0002}
+table{width:100%;border-collapse:collapse;font-size:14px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-weight:600;font-size:12px}
+.scroll{max-height:460px;overflow:auto}
+.tag{display:inline-block;padding:2px 9px;border-radius:999px;font-size:13px;font-weight:700;font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:1px;background:#14532d;color:#bbf7d0}
+.empty{color:var(--muted);font-size:13px;padding:10px 0}
+button{border:0;border-radius:10px;padding:9px 14px;font-size:14px;font-weight:650;cursor:pointer;background:#344a64;color:#fff}
+.flash{animation:fl 1.2s}@keyframes fl{from{background:#1d4ed855}to{background:transparent}}
+.small{font-size:12px;color:var(--muted);line-height:1.6;margin-top:14px}
 </style>
 </head>
 <body>
 <main>
 <header>
-  <h1>車牌辨識即時監控</h1>
-  <div><span class="dot" id="dot"></span> <span id="mst">連線中…</span></div>
+  <h1>🖥️ 車牌辨識即時監控</h1>
+  <div class="conn"><span id="dot" class="dot wait"></span><span id="connText">連線中…</span></div>
 </header>
-<div class="card" style="margin-bottom:12px">Topic <input id="topic" value="nutc/im/s1411331044/plate/recognition">
-  <button class="alt" id="resub">重新訂閱</button></div>
+
 <div class="stats">
-  <div class="card"><b id="sEv">0</b><span>事件總數</span></div>
-  <div class="card"><b id="sPl">0</b><span>不同車牌數</span></div>
-  <div class="card"><b id="sDv">0</b><span>裝置數</span></div>
-  <div class="card"><b id="sLast" style="font-size:15px">—</b><span>最後事件時間</span></div>
+  <div class="stat"><b id="sTotal">0</b><span>收到事件總數</span></div>
+  <div class="stat"><b id="sPlates">0</b><span>辨識到的車牌數</span></div>
+  <div class="stat"><b id="sDevices">0</b><span>裝置數</span></div>
+  <div class="stat"><b id="sLast">—</b><span>最後事件時間</span></div>
 </div>
-<div class="two">
-  <div class="card"><h2>車牌名單</h2><ul id="plist"></ul></div>
-  <div class="card"><h2>即時紀錄（最多 200 筆）
-    <button class="alt" id="csv">匯出 CSV</button> <button class="alt" id="clr">清除</button></h2><ul id="elog"></ul></div>
+
+<div class="grid">
+  <section class="panel">
+    <h2>辨識車牌名單（最新狀態）</h2>
+    <div class="scroll">
+      <table><thead><tr><th>車牌</th><th>最後時間</th><th>信心</th><th>次數</th></tr></thead><tbody id="plateBody"></tbody></table>
+      <div id="plateEmpty" class="empty">等待資料中…</div>
+    </div>
+  </section>
+  <section class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h2 style="margin:0">即時紀錄</h2>
+      <div><button id="csvBtn">匯出 CSV</button> <button id="clearBtn">清除畫面</button></div>
+    </div>
+    <div class="scroll">
+      <table><thead><tr><th>時間</th><th>車牌</th><th>版型</th><th>信心</th><th>裝置</th></tr></thead><tbody id="logBody"></tbody></table>
+      <div id="logEmpty" class="empty">等待資料中…</div>
+    </div>
+  </section>
 </div>
+
+<p class="small">Broker：broker.hivemq.com（wss://broker.hivemq.com:8884/mqtt）｜Topic：<span id="topic"></span><br>
+這是公開 broker，任何知道 topic 的人都能發布或讀取，所以收到的資料不一定可信；畫面只顯示文字內容，且紀錄只保存在此頁面記憶體，關閉網頁即消失。車牌屬於可識別個人的資訊，請妥善處理匯出的 CSV。</p>
 </main>
 
 <script>
-const $ = id => document.getElementById(id);
-const BROKER = "wss://broker.hivemq.com:8884/mqtt";
-const events = [], plates = new Map(), devices = new Set();
+(() => {
+  "use strict";
+  const BROKER_URL = "wss://broker.hivemq.com:8884/mqtt";
+  const TOPIC = "nutc/im/s1411331044/plate/recognition";
+  const MAX_LOG = 200;
+  const $ = id => document.getElementById(id);
+  $("topic").textContent = TOPIC;
 
-const client = mqtt.connect(BROKER, {clientId: "platemon_" + Math.random().toString(16).slice(2, 10), reconnectPeriod: 3000});
-let curTopic = "";
-const sub = () => {
-  if (curTopic) client.unsubscribe(curTopic);
-  curTopic = $("topic").value.trim();
-  client.subscribe(curTopic);
-};
-const setSt = (on, t) => { $("dot").className = "dot" + (on ? " on" : ""); $("mst").textContent = t || (on ? "已連線" : "未連線"); };
-client.on("connect", () => { setSt(true); sub(); });
-client.on("reconnect", () => setSt(false, "重連中…"));
-client.on("close", () => setSt(false));
-$("resub").onclick = sub;
+  const plates = new Map();   // plate -> {time,conf,count,device,ts}
+  const devices = new Set();
+  const logs = [];
+  let total = 0;
 
-client.on("message", (t, m) => {
-  let d; try { d = JSON.parse(m.toString()); } catch { return; }
-  if (!d || typeof d.plate !== "string" || d.plate.length > 12) return;   // 基本驗證，避免偽造內容
-  const ev = {
-    plate: d.plate, format: String(d.format || ""), conf: Number(d.confidence) || 0,
-    device: String(d.device_id || "?").slice(0, 30), time: String(d.time || new Date().toLocaleString()).slice(0, 25),
-  };
-  events.unshift(ev); if (events.length > 200) events.pop();
-  devices.add(ev.device);
-  const r = plates.get(ev.plate) || {count: 0};
-  Object.assign(r, {last: ev.time, device: ev.device, conf: ev.conf, count: r.count + 1});
-  plates.set(ev.plate, r);
-  render(ev.time);
-});
+  function setConn(cls, msg){ $("dot").className = "dot " + cls; $("connText").textContent = msg; }
+  const clip = (v, n) => String(v ?? "").slice(0, n);
 
-function li(main, sub) {
-  const e = document.createElement("li"), p = document.createElement("span"), s = document.createElement("small");
-  p.className = "p"; p.textContent = main; s.textContent = " " + sub;
-  e.append(p, s); return e;
-}
-function render(last) {
-  $("sEv").textContent = events.length; $("sPl").textContent = plates.size;
-  $("sDv").textContent = devices.size; if (last) $("sLast").textContent = last;
-  $("plist").replaceChildren(...[...plates].sort((a, b) => b[1].last.localeCompare(a[1].last))
-    .map(([p, r]) => li(p, `最後 ${r.last}｜${r.device}｜信心 ${r.conf.toFixed(2)}｜${r.count} 次`)));
-  $("elog").replaceChildren(...events.map(e => li(e.plate, `${e.time}｜${e.device}｜${e.format}｜信心 ${e.conf.toFixed(2)}`)));
-}
-$("clr").onclick = () => { events.length = 0; plates.clear(); devices.clear(); $("sLast").textContent = "—"; render(); };
-$("csv").onclick = () => {
-  const rows = [["時間", "車牌", "版型", "信心", "裝置"], ...events.map(e => [e.time, e.plate, e.format, e.conf, e.device])];
-  const q = v => '"' + String(v).replace(/"/g, '""').replace(/^([=+\-@])/, "'$1") + '"';   // 避免 CSV 公式注入
-  const blob = new Blob(["\ufeff" + rows.map(r => r.map(q).join(",")).join("\n")], {type: "text/csv;charset=utf-8"});
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "plate-events.csv"; a.click();
-};
+  function cell(tr, text){
+    const td = document.createElement("td"); td.textContent = text; tr.append(td); return td;
+  }
+
+  function renderPlates(){
+    const body = $("plateBody"); body.replaceChildren();
+    const rows = [...plates.entries()].sort((a,b) => b[1].ts - a[1].ts);
+    rows.forEach(([plate, p], i) => {
+      const tr = document.createElement("tr"); if(i === 0 && p.fresh) tr.className = "flash";
+      const td = document.createElement("td");
+      const tag = document.createElement("span"); tag.className = "tag"; tag.textContent = plate;
+      td.append(tag); tr.append(td);
+      cell(tr, p.time); cell(tr, p.conf.toFixed(2)); cell(tr, String(p.count));
+      body.append(tr);
+    });
+    $("plateEmpty").style.display = rows.length ? "none" : "block";
+    $("sPlates").textContent = plates.size;
+  }
+
+  function renderLogs(){
+    const body = $("logBody"); body.replaceChildren();
+    logs.forEach((l, i) => {
+      const tr = document.createElement("tr"); if(i === 0) tr.className = "flash";
+      cell(tr, l.time); const pt = cell(tr, l.plate); pt.style.color = "#86efac"; pt.style.fontWeight = "700";
+      cell(tr, l.format); cell(tr, l.conf.toFixed(2)); cell(tr, l.device);
+      body.append(tr);
+    });
+    $("logEmpty").style.display = logs.length ? "none" : "block";
+  }
+
+  function handle(raw){
+    let d;
+    try { d = JSON.parse(raw); } catch(e){ return; }
+    if(!d || typeof d !== "object" || typeof d.plate !== "string") return;
+    const plate = clip(d.plate, 12).toUpperCase();
+    if(!/^[A-Z0-9-]{4,10}$/.test(plate)) return;           // 基本格式檢查，過濾偽造或雜訊內容
+    const device = clip(d.device_id, 40) || "unknown";
+    const format = clip(d.format, 20);
+    const c = Number(d.confidence); const conf = Number.isFinite(c) ? c : 0;
+    const time = clip(d.time, 30) || new Date().toLocaleString();
+    total++; devices.add(device);
+    const prev = plates.get(plate);
+    plates.set(plate, {time, conf, device, count: (prev ? prev.count : 0) + 1, ts: Date.now(), fresh: true});
+    logs.unshift({time, plate, format, conf, device});
+    if(logs.length > MAX_LOG) logs.pop();
+    $("sTotal").textContent = total; $("sDevices").textContent = devices.size;
+    $("sLast").textContent = time.slice(-8);
+    renderPlates(); renderLogs();
+  }
+
+  const client = mqtt.connect(BROKER_URL, {clientId: "plate-monitor-" + Math.random().toString(16).slice(2,10), clean: true, reconnectPeriod: 3000, connectTimeout: 10000});
+  client.on("connect", () => {
+    setConn("ok", "已連線，訂閱中");
+    client.subscribe(TOPIC, {qos: 0}, err => setConn(err ? "" : "ok", err ? "訂閱失敗：" + err.message : "已連線並訂閱 topic"));
+  });
+  client.on("reconnect", () => setConn("wait", "重新連線中…"));
+  client.on("close", () => setConn("", "連線中斷，自動重試中…"));
+  client.on("error", e => setConn("", "錯誤：" + e.message));
+  client.on("message", (topic, payload) => handle(payload.toString()));
+
+  $("clearBtn").addEventListener("click", () => {
+    plates.clear(); devices.clear(); logs.length = 0; total = 0;
+    $("sTotal").textContent = "0"; $("sDevices").textContent = "0"; $("sLast").textContent = "—";
+    renderPlates(); renderLogs();
+  });
+
+  $("csvBtn").addEventListener("click", () => {
+    if(!logs.length){ alert("目前沒有紀錄。"); return; }
+    const esc = v => { let s = String(v); if(/^[=+\-@]/.test(s)) s = "'" + s; return '"' + s.replace(/"/g, '""') + '"'; };
+    const csv = "時間,車牌,版型,信心,裝置ID\n" + logs.slice().reverse().map(l => [l.time, l.plate, l.format, l.conf, l.device].map(esc).join(",")).join("\n");
+    const url = URL.createObjectURL(new Blob(["\ufeff" + csv], {type: "text/csv;charset=utf-8"}));
+    const a = document.createElement("a"); a.href = url; a.download = "plate-log.csv"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  renderPlates(); renderLogs();
+})();
 </script>
 </body>
 </html>
