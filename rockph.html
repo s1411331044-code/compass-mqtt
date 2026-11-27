@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>AI 剪刀石頭布 - 手機辨識端</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- MQTT.js -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <!-- MediaPipe Hands -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col justify-between p-4 font-sans select-none">
+
+  <!-- 頂部連線設定列 -->
+  <header class="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 shadow-lg">
+    <div class="flex items-center justify-between mb-2.5">
+      <div class="flex items-center gap-2">
+        <span id="mqttDot" class="w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+        <span class="font-bold text-sm text-white">📱 手機鏡頭辨識端</span>
+      </div>
+      <span id="mqttStatusText" class="text-xs text-slate-400">未連線</span>
+    </div>
+
+    <div class="flex gap-2">
+      <input
+        id="roomInput"
+        type="text"
+        inputmode="numeric"
+        maxlength="6"
+        placeholder="輸入電腦端 6 碼代碼"
+        class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-center font-mono text-lg tracking-widest text-indigo-400 focus:outline-none focus:border-indigo-500"
+      />
+      <button
+        onclick="connectFromInput()"
+        class="bg-indigo-600 active:bg-indigo-700 text-white font-semibold px-4 py-2 rounded-xl text-sm transition"
+      >
+        連線電腦
+      </button>
+    </div>
+  </header>
+
+  <!-- 相機影像與 AI 骨架畫布 -->
+  <main class="my-3 flex-1 flex flex-col justify-center">
+    <div class="relative w-full aspect-[3/4] max-h-[54vh] mx-auto bg-slate-900 rounded-3xl overflow-hidden border-2 border-slate-800 shadow-2xl">
+      <video id="videoElement" class="hidden" playsinline autoplay muted></video>
+      <canvas id="outputCanvas" class="w-full h-full object-cover"></canvas>
+
+      <!-- 左上角即時辨識浮標 -->
+      <div class="absolute top-3 left-3 bg-slate-950/80 backdrop-blur-md border border-slate-700/80 px-3.5 py-2 rounded-2xl">
+        <div class="text-xs text-slate-400">偵測手勢 / 手指數</div>
+        <div class="text-base font-extrabold text-white mt-0.5">
+          <span id="overlayGesture">啟動相機中...</span>
+          <span class="text-amber-400 font-mono ml-1">(<span id="overlayFingers">0</span>指)</span>
+        </div>
+      </div>
+
+      <!-- 右上角切換鏡頭按鈕 -->
+      <button
+        onclick="switchCamera()"
+        class="absolute top-3 right-3 bg-slate-950/80 backdrop-blur-md border border-slate-700/80 p-2.5 rounded-2xl text-white active:scale-95 transition"
+        title="切換前/後鏡頭"
+      >
+        🔄
+      </button>
+
+      <!-- 倒數計時遮罩 -->
+      <div id="countdownOverlay" class="hidden absolute inset-0 bg-slate-950/50 backdrop-blur-[2px] flex flex-col items-center justify-center">
+        <div class="text-sm font-bold text-indigo-300 tracking-widest mb-1">請準備出拳</div>
+        <div id="countdownText" class="text-8xl font-black text-white drop-shadow-lg">3</div>
+      </div>
+    </div>
+
+    <!-- 手機端簡易結果提示卡 -->
+    <div id="mobileResultCard" class="mt-3 bg-slate-900/90 border border-slate-800 rounded-2xl p-3.5 text-center">
+      <div id="mobileResultTitle" class="text-base font-bold text-slate-200">
+        規則：0指=石頭 ✊ ｜ 1-2指=剪刀 ✌️ ｜ 3-5指=布 🖐️
+      </div>
+      <div id="mobileResultDetail" class="text-xs text-slate-400 mt-1">
+        對準手掌後按下「開始對決」，結果將同步顯示於電腦端
+      </div>
+    </div>
+  </main>
+
+  <!-- 底部操作按鈕與本地戰績 -->
+  <footer class="space-y-3">
+    <div class="grid grid-cols-3 gap-2 text-center bg-slate-900 border border-slate-800 rounded-2xl py-2">
+      <div>
+        <span class="text-xs text-slate-400">勝</span>
+        <span id="mWin" class="font-bold text-emerald-400 ml-1">0</span>
+      </div>
+      <div>
+        <span class="text-xs text-slate-400">平</span>
+        <span id="mDraw" class="font-bold text-slate-200 ml-1">0</span>
+      </div>
+      <div>
+        <span class="text-xs text-slate-400">敗</span>
+        <span id="mLose" class="font-bold text-rose-400 ml-1">0</span>
+      </div>
+    </div>
+
+    <button
+      id="playBtn"
+      onclick="startRound()"
+      class="w-full py-4 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 active:scale-[0.99] text-white font-black text-lg tracking-wider shadow-lg shadow-indigo-600/30 transition disabled:opacity-50"
+    >
+      ⚔️ 開始對決 (3秒倒數)
+    </button>
+  </footer>
+
+  <script>
+    const BROKER_URL = 'wss://broker.hivemq.com:8884/mqtt';
+    let client = null;
+    let roomId = '';
+    let facingMode = 'user'; // 'user' 前鏡頭 | 'environment' 後鏡頭
+    let videoStream = null;
+    let isPlayingRound = false;
+    let lastLiveSentAt = 0;
+
+    let currentDetection = {
+      gesture: 'none', // 'rock' | 'scissors' | 'paper' | 'none'
+      fingers: 0
+    };
+    let stats = { win: 0, draw: 0, lose: 0 };
+
+    const GESTURE_INFO = {
+      rock: { name: '石頭', emoji: '✊' },
+      scissors: { name: '剪刀', emoji: '✌️' },
+      paper: { name: '布', emoji: '🖐️' },
+      none: { name: '未偵測到手', emoji: '❓' }
+    };
+
+    // 1. 解析網址參數 (?room=123456)
+    const urlParams = new URLSearchParams(window.location.search);
+    const initialRoom = urlParams.get('room');
+    if (initialRoom) {
+      document.getElementById('roomInput').value = initialRoom;
+      connectMQTT(initialRoom);
+    }
+
+    function connectFromInput() {
+      const val = document.getElementById('roomInput').value.trim();
+      if (!/^\d{6}$/.test(val)) {
+        alert('請輸入電腦端顯示的 6 位數字房間代碼');
+        return;
+      }
+      connectMQTT(val);
+    }
+
+    function connectMQTT(targetRoom) {
+      if (client) client.end(true);
+      roomId = targetRoom;
+      const statusText = document.getElementById('mqttStatusText');
+      const dot = document.getElementById('mqttDot');
+
+      statusText.textContent = '連線中...';
+      dot.className = 'w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse';
+
+      client = mqtt.connect(BROKER_URL, {
+        clientId: `mobile_${roomId}_${Math.random().toString(16).slice(2, 8)}`,
+        clean: true
+      });
+
+      client.on('connect', () => {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400';
+        statusText.textContent = `已連線房間 #${roomId}`;
+        client.subscribe(`rps-ai-game/${roomId}/reset`);
+      });
+
+      client.on('message', (topic) => {
+        if (topic.endsWith('/reset')) {
+          stats = { win: 0, draw: 0, lose: 0 };
+          updateMobileStats();
+        }
+      });
+
+      client.on('offline', () => {
+        dot.className = 'w-2.5 h-2.5 rounded-full bg-rose-500';
+        statusText.textContent = '連線中斷';
+      });
+    }
+
+    function publishMessage(subtopic, payloadObj) {
+      if (client && client.connected && roomId) {
+        client.publish(`rps-ai-game/${roomId}/${subtopic}`, JSON.stringify(payloadObj));
+      }
+    }
+
+    // 2. 計算兩點歐氏距離（用於抗旋轉手指伸展判斷）
+    function distance(a, b) {
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    // 計算伸出手指數量 (0 ~ 5)
+    function countExtendedFingers(landmarks) {
+      let count = 0;
+      const wrist = landmarks[0];
+
+      // 大拇指：比較指尖(4)與指節(2)到小指根部(17)的距離
+      const pinkyMCP = landmarks[17];
+      if (distance(landmarks[4], pinkyMCP) > distance(landmarks[2], pinkyMCP) * 1.15) {
+        count++;
+      }
+
+      // 食指(8 vs 6)、中指(12 vs 10)、無名指(16 vs 14)、小指(20 vs 18)
+      const fingerPairs = [
+        [8, 6],
+        [12, 10],
+        [16, 14],
+        [20, 18]
+      ];
+      for (const [tipIdx, pipIdx] of fingerPairs) {
+        if (distance(landmarks[tipIdx], wrist) > distance(landmarks[pipIdx], wrist) * 1.12) {
+          count++;
+        }
+      }
+      return count;
+    }
+
+    // 依規則分類剪刀石頭布
+    function classifyGesture(fingerCount) {
+      if (fingerCount === 0) return 'rock';         // 握拳 -> 石頭
+      if (fingerCount <= 2) return 'scissors';      // 1-2指 -> 剪刀
+      return 'paper';                               // 3-5指 -> 布
+    }
+
+    // 3. 初始化 MediaPipe Hands
+    const videoElement = document.getElementById('videoElement');
+    const canvasElement = document.getElementById('outputCanvas');
+    const canvasCtx = canvasElement.getContext('2d');
+
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.65,
+      minTrackingConfidence: 0.6
+    });
+
+    hands.onResults((results) => {
+      canvasElement.width = videoElement.videoWidth || 480;
+      canvasElement.height = videoElement.videoHeight || 640;
+
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+      // 前鏡頭鏡像翻轉
+      if (facingMode === 'user') {
+        canvasCtx.translate(canvasElement.width, 0);
+        canvasCtx.scale(-1, 1);
+      }
+
+      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const landmarks = results.multiHandLandmarks[0];
+        drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, { color: '#38bdf8', lineWidth: 3 });
+        drawLandmarks(canvasCtx, landmarks, { color: '#f43f5e', lineWidth: 1, radius: 4 });
+
+        const fingers = countExtendedFingers(landmarks);
+        const gesture = classifyGesture(fingers);
+        currentDetection = { gesture, fingers };
+      } else {
+        currentDetection = { gesture: 'none', fingers: 0 };
+      }
+      canvasCtx.restore();
+
+      const info = GESTURE_INFO[currentDetection.gesture];
+      document.getElementById('overlayGesture').textContent = `${info.emoji} ${info.name}`;
+      document.getElementById('overlayFingers').textContent = currentDetection.fingers;
+
+      // 節流同步即時狀態到電腦端 (每 250ms 一次)
+      const now = Date.now();
+      if (now - lastLiveSentAt > 250) {
+        lastLiveSentAt = now;
+        publishMessage('live', currentDetection);
+      }
+    });
+
+    // 4. 啟動與切換手機相機
+    async function startCamera() {
+      if (videoStream) {
+        videoStream.getTracks().forEach(track => track.stop());
+      }
+      try {
+        videoStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: facingMode, width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false
+        });
+        videoElement.srcObject = videoStream;
+        await videoElement.play();
+        requestAnimationFrame(processVideoFrame);
+      } catch (err) {
+        document.getElementById('overlayGesture').textContent = '無法存取相機 (請確認 HTTPS 權限)';
+        console.error(err);
+      }
+    }
+
+    async function processVideoFrame() {
+      if (videoElement.readyState >= 2) {
+        await hands.send({ image: videoElement });
+      }
+      requestAnimationFrame(processVideoFrame);
+    }
+
+    function switchCamera() {
+      facingMode = facingMode === 'user' ? 'environment' : 'user';
+      startCamera();
+    }
+
+    // 5. 對決流程與勝負判定
+    function startRound() {
+      if (isPlayingRound) return;
+      isPlayingRound = true;
+
+      const playBtn = document.getElementById('playBtn');
+      const overlay = document.getElementById('countdownOverlay');
+      const countText = document.getElementById('countdownText');
+
+      playBtn.disabled = true;
+      overlay.classList.remove('hidden');
+
+      let count = 3;
+      countText.textContent = count;
+      publishMessage('countdown', { count });
+
+      const timer = setInterval(() => {
+        count--;
+        if (count > 0) {
+          countText.textContent = count;
+          publishMessage('countdown', { count });
+        } else {
+          clearInterval(timer);
+          overlay.classList.add('hidden');
+          publishMessage('countdown', { count: 0 });
+          evaluateRound();
+          playBtn.disabled = false;
+          isPlayingRound = false;
+        }
+      }, 1000);
+    }
+
+    function evaluateRound() {
+      const playerGesture = currentDetection.gesture;
+      const fingers = currentDetection.fingers;
+      const choices = ['rock', 'scissors', 'paper'];
+      const cpuGesture = choices[Math.floor(Math.random() * choices.length)];
+
+      const pInfo = GESTURE_INFO[playerGesture];
+      const cInfo = GESTURE_INFO[cpuGesture];
+      const titleEl = document.getElementById('mobileResultTitle');
+      const detailEl = document.getElementById('mobileResultDetail');
+
+      if (playerGesture === 'none') {
+        titleEl.textContent = '⚠️ 未偵測到手部，本局無效';
+        detailEl.textContent = '請確保手掌在鏡頭畫面內再試一次';
+        publishMessage('result', {
+          outcome: 'invalid',
+          playerGesture: 'none',
+          cpuGesture,
+          fingers: 0
+        });
+        return;
+      }
+
+      let outcome = 'draw';
+      if (playerGesture === cpuGesture) {
+        outcome = 'draw';
+        stats.draw++;
+        titleEl.textContent = `🤝 平手！你出 ${pInfo.emoji} vs 系統 ${cInfo.emoji}`;
+      } else if (
+        (playerGesture === 'scissors' && cpuGesture === 'paper') ||
+        (playerGesture === 'rock' && cpuGesture === 'scissors') ||
+        (playerGesture === 'paper' && cpuGesture === 'rock')
+      ) {
+        outcome = 'win';
+        stats.win++;
+        titleEl.textContent = `🎉 你贏了！你出 ${pInfo.emoji} vs 系統 ${cInfo.emoji}`;
+      } else {
+        outcome = 'lose';
+        stats.lose++;
+        titleEl.textContent = `💥 你輸了！你出 ${pInfo.emoji} vs 系統 ${cInfo.emoji}`;
+      }
+
+      detailEl.textContent = `本局偵測到 ${fingers} 根手指 · 結果已同步至電腦端`;
+      updateMobileStats();
+
+      const nowStr = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+      publishMessage('result', {
+        outcome,
+        playerGesture,
+        cpuGesture,
+        fingers,
+        time: nowStr
+      });
+    }
+
+    function updateMobileStats() {
+      document.getElementById('mWin').textContent = stats.win;
+      document.getElementById('mDraw').textContent = stats.draw;
+      document.getElementById('mLose').textContent = stats.lose;
+    }
+
+    // 啟動相機
+    startCamera();
+  </script>
+</body>
+</html>

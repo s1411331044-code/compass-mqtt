@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 剪刀石頭布 - 電腦端顯示看板</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- MQTT.js -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <!-- QRCode.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    @keyframes popIn {
+      0% { transform: scale(0.8); opacity: 0; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    .animate-pop { animation: popIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col justify-between p-6 font-sans">
+
+  <!-- 頂部狀態與房間配對區 -->
+  <header class="max-w-6xl w-full mx-auto flex flex-wrap items-center justify-between gap-4 bg-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-xl">
+    <div class="flex items-center gap-3">
+      <div class="w-12 h-12 rounded-xl bg-indigo-600 flex items-center justify-center text-2xl shadow-lg shadow-indigo-500/30">
+        🎮
+      </div>
+      <div>
+        <h1 class="text-xl font-bold tracking-wide text-white">AI 剪刀石頭布 — 電腦端戰況看板</h1>
+        <div class="flex items-center gap-2 text-sm mt-0.5">
+          <span id="mqttDot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
+          <span id="mqttStatus" class="text-slate-400">正在連線至 MQTT 伺服器...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 房間配對資訊 -->
+    <div class="flex items-center gap-4 bg-slate-950/80 border border-slate-800 px-4 py-2.5 rounded-xl">
+      <div id="qrcode" class="bg-white p-1.5 rounded-lg"></div>
+      <div>
+        <div class="text-xs text-slate-400">配對房間代碼 (Room ID)</div>
+        <div class="flex items-center gap-2">
+          <span id="roomCodeDisplay" class="text-2xl font-mono font-extrabold tracking-widest text-indigo-400">------</span>
+          <button onclick="regenerateRoom()" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1 rounded-md transition">
+            換一組
+          </button>
+        </div>
+        <div class="text-[11px] text-slate-500 mt-1">手機開啟 <code class="text-slate-300">mobile.html</code> 掃碼或輸入代碼</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主戰場顯示區 -->
+  <main class="max-w-6xl w-full mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6 my-6 flex-1">
+    
+    <!-- 左側 + 中間：即時對決舞台 -->
+    <section class="lg:col-span-2 bg-slate-900/80 border border-slate-800 rounded-3xl p-6 flex flex-col justify-between shadow-2xl relative overflow-hidden">
+      
+      <!-- 即時手勢預覽列 -->
+      <div class="flex items-center justify-between bg-slate-950/70 border border-slate-800/80 rounded-2xl px-5 py-3">
+        <div class="flex items-center gap-2.5">
+          <span id="phoneLiveBadge" class="w-2.5 h-2.5 rounded-full bg-slate-600"></span>
+          <span class="text-sm text-slate-300">手機即時偵測：</span>
+          <span id="liveGestureText" class="font-bold text-indigo-400">等待手機連線...</span>
+        </div>
+        <div class="text-sm bg-slate-800 px-3 py-1 rounded-full text-slate-300">
+          偵測手指數：<span id="liveFingerCount" class="font-mono font-bold text-amber-400 text-base">-</span> 根
+        </div>
+      </div>
+
+      <!-- 對決主畫面 -->
+      <div class="my-auto py-8">
+        <!-- 倒數計時大字 -->
+        <div id="countdownBanner" class="hidden text-center mb-6">
+          <div class="text-sm uppercase tracking-widest text-indigo-400 font-semibold">準備出拳</div>
+          <div id="countdownNumber" class="text-8xl font-black text-white drop-shadow-[0_0_25px_rgba(99,102,241,0.8)]">3</div>
+        </div>
+
+        <!-- 雙方出拳展示 -->
+        <div class="grid grid-cols-3 items-center text-center gap-4">
+          <!-- 玩家 -->
+          <div class="bg-slate-950/60 border border-slate-800 rounded-2xl p-6">
+            <div class="text-sm font-medium text-sky-400 mb-2">玩家 (手機鏡頭)</div>
+            <div id="playerEmoji" class="text-7xl md:text-8xl my-3 select-none">❔</div>
+            <div id="playerMoveName" class="text-xl font-bold text-white">等待出拳</div>
+            <div id="playerFingerDetail" class="text-xs text-slate-400 mt-1">偵測手指：- 根</div>
+          </div>
+
+          <!-- VS 與勝負結果 -->
+          <div class="flex flex-col items-center justify-center">
+            <div id="resultBadge" class="px-5 py-2.5 rounded-2xl bg-slate-800 text-slate-300 font-extrabold text-xl md:text-2xl tracking-wide shadow-lg">
+              VS
+            </div>
+            <p id="resultSubtext" class="text-xs text-slate-400 mt-3">請在手機端點擊「開始對決」</p>
+          </div>
+
+          <!-- 電腦 / 手機 AI -->
+          <div class="bg-slate-950/60 border border-slate-800 rounded-2xl p-6">
+            <div class="text-sm font-medium text-rose-400 mb-2">系統隨機出拳</div>
+            <div id="cpuEmoji" class="text-7xl md:text-8xl my-3 select-none">🤖</div>
+            <div id="cpuMoveName" class="text-xl font-bold text-white">準備就緒</div>
+            <div class="text-xs text-slate-400 mt-1">隨機演算法</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 記分板 -->
+      <div class="grid grid-cols-3 gap-4 pt-4 border-t border-slate-800/80">
+        <div class="bg-emerald-950/40 border border-emerald-800/50 rounded-2xl p-3 text-center">
+          <div class="text-xs text-emerald-400 font-semibold">玩家勝場</div>
+          <div id="winCount" class="text-3xl font-black text-emerald-300 mt-0.5">0</div>
+        </div>
+        <div class="bg-slate-800/40 border border-slate-700/50 rounded-2xl p-3 text-center">
+          <div class="text-xs text-slate-400 font-semibold">平手</div>
+          <div id="drawCount" class="text-3xl font-black text-slate-200 mt-0.5">0</div>
+        </div>
+        <div class="bg-rose-950/40 border border-rose-800/50 rounded-2xl p-3 text-center">
+          <div class="text-xs text-rose-400 font-semibold">系統勝場</div>
+          <div id="loseCount" class="text-3xl font-black text-rose-300 mt-0.5">0</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 右側：歷史對戰紀錄 -->
+    <aside class="bg-slate-900/80 border border-slate-800 rounded-3xl p-6 flex flex-col shadow-2xl max-h-[620px]">
+      <div class="flex items-center justify-between pb-4 border-b border-slate-800">
+        <h2 class="font-bold text-lg text-white">📜 對戰勝負紀錄</h2>
+        <button onclick="resetHistory()" class="text-xs text-slate-400 hover:text-rose-400 transition">
+          清除紀錄
+        </button>
+      </div>
+      <div id="historyList" class="flex-1 overflow-y-auto space-y-2.5 mt-4 pr-1">
+        <div id="emptyHistoryMsg" class="text-center text-slate-500 text-sm py-12">
+          尚無對戰紀錄<br/>手機連線後即可開始遊戲
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const BROKER_URL = 'wss://broker.hivemq.com:8884/mqtt';
+    let client = null;
+    let roomId = '';
+    let stats = { win: 0, draw: 0, lose: 0 };
+    let roundNumber = 0;
+
+    const GESTURE_META = {
+      rock: { name: '石頭', emoji: '✊' },
+      scissors: { name: '剪刀', emoji: '✌️' },
+      paper: { name: '布', emoji: '🖐️' },
+      none: { name: '未偵測到手部', emoji: '❓' }
+    };
+
+    function generateRoomCode() {
+      return Math.floor(100000 + Math.random() * 900000).toString();
+    }
+
+    function renderQRCode(code) {
+      const qrContainer = document.getElementById('qrcode');
+      qrContainer.innerHTML = '';
+      // 自動推算同目錄下的 mobile.html 網址
+      const currentUrl = new URL(window.location.href);
+      const basePath = currentUrl.pathname.substring(0, currentUrl.pathname.lastIndexOf('/') + 1);
+      const mobileUrl = `${currentUrl.origin}${basePath}mobile.html?room=${code}`;
+
+      new QRCode(qrContainer, {
+        text: mobileUrl,
+        width: 76,
+        height: 76,
+        colorDark: '#0f172a',
+        colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.M
+      });
+    }
+
+    function connectMQTT(newRoomId) {
+      if (client) {
+        client.end(true);
+      }
+      roomId = newRoomId;
+      document.getElementById('roomCodeDisplay').textContent = roomId;
+      renderQRCode(roomId);
+
+      const topicBase = `rps-ai-game/${roomId}`;
+      client = mqtt.connect(BROKER_URL, {
+        clientId: `desktop_${roomId}_${Math.random().toString(16).slice(2, 8)}`,
+        clean: true
+      });
+
+      client.on('connect', () => {
+        document.getElementById('mqttDot').className = 'w-2.5 h-2.5 rounded-full bg-emerald-400';
+        document.getElementById('mqttStatus').textContent = '已連線至雲端同步通道';
+        client.subscribe(`${topicBase}/#`);
+      });
+
+      client.on('message', (topic, payload) => {
+        try {
+          const data = JSON.parse(payload.toString());
+          if (topic.endsWith('/live')) {
+            handleLiveUpdate(data);
+          } else if (topic.endsWith('/countdown')) {
+            handleCountdown(data);
+          } else if (topic.endsWith('/result')) {
+            handleRoundResult(data);
+          } else if (topic.endsWith('/reset')) {
+            resetHistory(false);
+          }
+        } catch (err) {
+          console.error('訊息解析失敗:', err);
+        }
+      });
+
+      client.on('offline', () => {
+        document.getElementById('mqttDot').className = 'w-2.5 h-2.5 rounded-full bg-rose-500';
+        document.getElementById('mqttStatus').textContent = '連線中斷，嘗試重連中...';
+      });
+    }
+
+    function regenerateRoom() {
+      resetHistory(false);
+      connectMQTT(generateRoomCode());
+    }
+
+    // 處理手機端即時手勢串流
+    function handleLiveUpdate(data) {
+      const badge = document.getElementById('phoneLiveBadge');
+      badge.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping';
+      setTimeout(() => { badge.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400'; }, 300);
+
+      const meta = GESTURE_META[data.gesture] || GESTURE_META.none;
+      document.getElementById('liveGestureText').textContent = `${meta.emoji} ${meta.name}`;
+      document.getElementById('liveFingerCount').textContent = data.fingers ?? '-';
+    }
+
+    // 處理倒數同步
+    function handleCountdown(data) {
+      const banner = document.getElementById('countdownBanner');
+      const numEl = document.getElementById('countdownNumber');
+      if (data.count > 0) {
+        banner.classList.remove('hidden');
+        numEl.textContent = data.count;
+        document.getElementById('resultBadge').textContent = '倒數中...';
+        document.getElementById('resultBadge').className = 'px-5 py-2.5 rounded-2xl bg-indigo-600 text-white font-extrabold text-xl tracking-wide shadow-lg';
+      } else {
+        banner.classList.add('hidden');
+      }
+    }
+
+    // 處理單局結算結果
+    function handleRoundResult(data) {
+      document.getElementById('countdownBanner').classList.add('hidden');
+
+      const pMeta = GESTURE_META[data.playerGesture] || GESTURE_META.none;
+      const cMeta = GESTURE_META[data.cpuGesture] || GESTURE_META.none;
+
+      const pEmojiEl = document.getElementById('playerEmoji');
+      const cEmojiEl = document.getElementById('cpuEmoji');
+      pEmojiEl.textContent = pMeta.emoji;
+      cEmojiEl.textContent = cMeta.emoji;
+      pEmojiEl.classList.remove('animate-pop');
+      cEmojiEl.classList.remove('animate-pop');
+      void pEmojiEl.offsetWidth;
+      pEmojiEl.classList.add('animate-pop');
+      cEmojiEl.classList.add('animate-pop');
+
+      document.getElementById('playerMoveName').textContent = pMeta.name;
+      document.getElementById('playerFingerDetail').textContent = `偵測手指：${data.fingers} 根`;
+      document.getElementById('cpuMoveName').textContent = cMeta.name;
+
+      const badge = document.getElementById('resultBadge');
+      const subtext = document.getElementById('resultSubtext');
+
+      if (data.outcome === 'win') {
+        stats.win++;
+        badge.textContent = '🎉 玩家獲勝！';
+        badge.className = 'px-5 py-2.5 rounded-2xl bg-emerald-500 text-slate-950 font-black text-2xl shadow-lg shadow-emerald-500/30 animate-pop';
+        subtext.textContent = `${pMeta.name} 擊敗了 ${cMeta.name}`;
+      } else if (data.outcome === 'lose') {
+        stats.lose++;
+        badge.textContent = '💥 系統獲勝！';
+        badge.className = 'px-5 py-2.5 rounded-2xl bg-rose-500 text-white font-black text-2xl shadow-lg shadow-rose-500/30 animate-pop';
+        subtext.textContent = `${cMeta.name} 擊敗了 ${pMeta.name}`;
+      } else if (data.outcome === 'draw') {
+        stats.draw++;
+        badge.textContent = '🤝 平手！';
+        badge.className = 'px-5 py-2.5 rounded-2xl bg-amber-400 text-slate-950 font-black text-2xl shadow-lg shadow-amber-400/30 animate-pop';
+        subtext.textContent = `雙方都出了 ${pMeta.name}`;
+      } else {
+        badge.textContent = '⚠️ 未偵測到手勢';
+        badge.className = 'px-5 py-2.5 rounded-2xl bg-slate-700 text-slate-200 font-bold text-lg';
+        subtext.textContent = '請將手掌完整放入手機鏡頭範圍內';
+        return;
+      }
+
+      updateScoreboard();
+      prependHistoryItem(data, pMeta, cMeta);
+    }
+
+    function updateScoreboard() {
+      document.getElementById('winCount').textContent = stats.win;
+      document.getElementById('drawCount').textContent = stats.draw;
+      document.getElementById('loseCount').textContent = stats.lose;
+    }
+
+    function prependHistoryItem(data, pMeta, cMeta) {
+      const list = document.getElementById('historyList');
+      const emptyMsg = document.getElementById('emptyHistoryMsg');
+      if (emptyMsg) emptyMsg.remove();
+
+      roundNumber++;
+      const outcomeLabel = {
+        win: '<span class="text-emerald-400 font-bold">勝</span>',
+        lose: '<span class="text-rose-400 font-bold">敗</span>',
+        draw: '<span class="text-amber-400 font-bold">平</span>'
+      }[data.outcome];
+
+      const item = document.createElement('div');
+      item.className = 'bg-slate-950/80 border border-slate-800 rounded-xl p-3 flex items-center justify-between text-sm animate-pop';
+      item.innerHTML = `
+        <div>
+          <div class="font-semibold text-slate-200">
+            第 ${roundNumber} 局：${pMeta.emoji} ${pMeta.name} <span class="text-slate-500">vs</span> ${cMeta.emoji} ${cMeta.name}
+          </div>
+          <div class="text-xs text-slate-400 mt-0.5">偵測手指：${data.fingers} 根 · ${data.time || ''}</div>
+        </div>
+        <div class="text-base px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800">
+          ${outcomeLabel}
+        </div>
+      `;
+      list.prepend(item);
+    }
+
+    function resetHistory(broadcast = true) {
+      stats = { win: 0, draw: 0, lose: 0 };
+      roundNumber = 0;
+      updateScoreboard();
+      document.getElementById('historyList').innerHTML = `
+        <div id="emptyHistoryMsg" class="text-center text-slate-500 text-sm py-12">
+          尚無對戰紀錄<br/>手機連線後即可開始遊戲
+        </div>
+      `;
+      if (broadcast && client && client.connected) {
+        client.publish(`rps-ai-game/${roomId}/reset`, JSON.stringify({ reset: true }));
+      }
+    }
+
+    // 啟動連線
+    connectMQTT(generateRoomCode());
+  </script>
+</body>
+</html>
